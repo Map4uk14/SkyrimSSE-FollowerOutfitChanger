@@ -1,0 +1,72 @@
+{
+    "modName": "DressYourFollowers",
+    "displayName": "Dress Your Followers",
+    "minMcmVersion": 11,
+    "pluginRequirements": [
+        "DressYourFollowers.esp"
+    ],
+    "content": [
+        {
+            "type": "header",
+            "text": "General"
+        },
+        {
+            "id": "bModEnabled:General",
+            "type": "toggle",
+            "text": "Mod enabled",
+            "help": "Master switch. When off, the overlay does nothing and outfits are no longer re-asserted.",
+            "valueOptions": {
+                "sourceType": "ModSettingBool"
+            }
+        },
+        {
+            "id": "bNotify:General",
+            "type": "toggle",
+            "text": "Show status messages",
+            "help": "Corner notifications for actions (e.g. 'Equipped: Iron Cuirass').",
+            "valueOptions": {
+                "sourceType": "ModSettingBool"
+            }
+        },
+        {
+            "type": "header",
+            "text": "Controls"
+        },
+        {
+            "position": 0,
+            "type": "info",
+            "text": "Look at a follower and press F4 to open the wardrobe overlay, then tick items to dress them. (Requires the PrismaUI framework.)"
+        },
+        {
+            "type": "header",
+            "text": "Maintenance"
+        },
+        {
+            "type": "text",
+            "text": "Re-assert outfits now",
+            "help": "Immediately re-apply the saved outfit to every nearby managed follower. Use if someone looks wrong after a script-heavy event.",
+            "action": {
+                "type": "CallFunction",
+                "form": "DressYourFollowers.esp|0xD62",
+                "scriptName": "DYF_Main",
+                "function": "ReassertAllLoaded"
+            }
+        },
+        {
+            "type": "text",
+            "text": "Release all followers",
+            "help": "Stop managing every follower. They keep what they are wearing now, but the mod no longer re-asserts it. Use before uninstalling.",
+            "action": {
+                "type": "CallFunction",
+                "form": "DressYourFollowers.esp|0xD62",
+                "scriptName": "DYF_Main",
+                "function": "ClearAllManaged"
+            }
+        },
+        {
+            "position": 1,
+            "type": "info",
+            "text": "Follower managers: if you use NFF/EFF/AFT outfit management on a follower, turn it off for that follower before dressing them here, or the two systems will fight."
+        }
+    ]
+}

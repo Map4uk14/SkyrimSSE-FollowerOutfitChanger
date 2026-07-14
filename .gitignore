@@ -1,0 +1,19 @@
+# Claude Code / MCP config (may contain tokens) — never commit
+.claude.json
+.mcp.json
+.claude/settings.local.json
+
+# Secrets
+*.pat
+*.token
+.env
+.env.*
+
+# Build output (2.2 GB of CMake artifacts)
+plugin/build/
+
+# Vendored dependencies — fetched separately, and VanillaScripts is copyrighted Bethesda content
+vendor/
+
+# Distributable archives
+dist/
