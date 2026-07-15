@@ -574,6 +574,66 @@ namespace {
         });
     }
 
+    // "Unequip all": strip every piece the follower currently wears. Same
+    // fast-path/slow-path split as OnJsToggle - we unequip here on the game thread
+    // for an instant result, and Papyrus clears the saved loadout so its re-assert
+    // poll keeps them undressed instead of putting the outfit straight back on.
+    // Items stay in the follower's inventory; this only takes them off.
+    void OnJsUndressAll(const char*) {
+        SKSE::GetTaskInterface()->AddTask([]() {
+            auto actor = ResolveTarget();
+            if (!actor) {
+                return;
+            }
+            auto eqm = RE::ActorEquipManager::GetSingleton();
+            if (!eqm) {
+                return;
+            }
+            // GetInventory returns a snapshot, so unequipping while we walk it is
+            // safe. Same filter as the wardrobe list, Unarmed included.
+            auto inventory = actor->GetInventory([](RE::TESBoundObject& o) {
+                if (o.IsArmor()) {
+                    return true;
+                }
+                auto weap = o.As<RE::TESObjectWEAP>();
+                return weap && !weap->IsHandToHandMelee();
+            });
+            for (auto& [obj, data] : inventory) {
+                auto& [count, entry] = data;
+                if (count <= 0 || !obj) {
+                    continue;
+                }
+                // force=TRUE on unequip = stop the engine re-equipping it, matching
+                // OnJsToggle's unequip path.
+                if (auto armo = obj->As<RE::TESObjectARMO>()) {
+                    if (actor->GetWornArmor(armo->GetFormID())) {
+                        eqm->UnequipObject(actor, armo, nullptr, 1, armo->GetEquipSlot(),
+                                           false, true, false, true, nullptr);
+                    }
+                } else if (auto weap = obj->As<RE::TESObjectWEAP>()) {
+                    auto rh = actor->GetEquippedObject(false);
+                    auto lh = actor->GetEquippedObject(true);
+                    auto wid = weap->GetFormID();
+                    if ((rh && rh->GetFormID() == wid) || (lh && lh->GetFormID() == wid)) {
+                        eqm->UnequipObject(actor, weap, nullptr, 1, weap->GetEquipSlot(),
+                                           false, true, false, true, nullptr);
+                    }
+                }
+            }
+            // Papyrus owns the durable state: clear the loadout for this follower.
+            // The actor is the sender so Papyrus knows who to clear.
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_UndressAll";
+                ev.strArg = "";
+                ev.numArg = 0.0f;
+                ev.sender = actor;
+                source->SendEvent(&ev);
+            }
+            PushListSoon();
+        });
+    }
+
     // Yours tab activated: (re)send the player's wearable inventory.
     void OnJsPlayerList(const char*) {
         SKSE::GetTaskInterface()->AddTask([]() { PushPlayerList(); });
@@ -708,6 +768,7 @@ void Dresser::Init() {
     g_prisma->RegisterJSListener(g_view, "dyf_toggle", OnJsToggle);
     g_prisma->RegisterJSListener(g_view, "dyf_give", OnJsGive);
     g_prisma->RegisterJSListener(g_view, "dyf_return", OnJsReturn);
+    g_prisma->RegisterJSListener(g_view, "dyf_undressall", OnJsUndressAll);
     g_prisma->RegisterJSListener(g_view, "dyf_playerlist", OnJsPlayerList);
     g_prisma->RegisterJSListener(g_view, "dyf_close", OnJsClose);
     g_prisma->RegisterJSListener(g_view, "dyf_pick", OnJsPick);

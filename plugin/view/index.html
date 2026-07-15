@@ -92,6 +92,15 @@
   .again-accent { color: #6ee7a8; }
 
   #filterbar { padding: 8px 12px 4px; }
+  /* Bulk "unequip all" action, under the filter (Follower tab only). Tinted red
+     on hover like .ret, since it takes gear off. */
+  #actionbar { padding: 0 12px 4px; }
+  .abtn {
+    cursor: pointer; text-align: center; padding: 6px 0; font-size: 12px;
+    color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
+  }
+  .abtn:hover { color: #ff9a9a; border-color: rgba(255,154,154,0.45); background: rgba(255,255,255,0.06); }
+  .abtn.off { opacity: 0.4; pointer-events: none; }
   #filter {
     width: 100%; box-sizing: border-box;
     background: rgba(0,0,0,0.30); color: #e8e8ea;
@@ -142,6 +151,7 @@
     <div id="tabPlayer" class="tab">Yours</div>
   </div>
   <div id="filterbar" style="display:none"><input id="filter" type="text" placeholder="Filter items…"></div>
+  <div id="actionbar" style="display:none"><div id="undressAll" class="abtn">Unequip all</div></div>
   <div id="picker"></div>
   <div id="list" style="display:none"></div>
   <div id="plist" style="display:none"></div>
@@ -228,6 +238,7 @@
     document.querySelector("#picker").style.display    = "";
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
+    document.querySelector("#actionbar").style.display = "none";
     document.querySelector("#list").style.display      = "none";
     document.querySelector("#plist").style.display     = "none";
     document.querySelector("#details").style.display   = "none";
@@ -248,6 +259,8 @@
     var f = activeTab === "follower";
     document.querySelector("#list").style.display  = f ? "" : "none";
     document.querySelector("#plist").style.display = f ? "none" : "";
+    // "Unequip all" only makes sense against the follower's own gear.
+    document.querySelector("#actionbar").style.display = f ? "" : "none";
     document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
     document.querySelector("#tabPlayer").className   = "tab" + (f ? "" : " active");
     document.querySelector("#filter").placeholder = f ? "Filter items…" : "Filter your items…";
@@ -267,6 +280,14 @@
 
   document.querySelector("#tabFollower").onclick = function () { setTab("follower"); };
   document.querySelector("#tabPlayer").onclick   = function () { setTab("player"); };
+
+  // Strip everything the follower is wearing. The plugin unequips on the game
+  // thread and Papyrus clears the saved loadout, so the re-assert poll keeps them
+  // undressed rather than putting the outfit straight back on. The repaint comes
+  // from the plugin's refresh, same as any other toggle.
+  document.querySelector("#undressAll").onclick = function () {
+    try { window.dyf_undressall(""); } catch (e) { dlog("dyf_undressall ERR: " + e); }
+  };
 
   // ---- Filter --------------------------------------------------------------
 
@@ -576,6 +597,11 @@
     var items = (data.items || []).slice().sort(function (a, b) {
       return a.name.localeCompare(b.name);
     });
+    // Nothing on -> nothing to take off. Set before the early returns below so
+    // every repaint path (reconcile / rebuild / empty) keeps the button honest.
+    var anyWorn = items.some(function (it) { return !!it.worn; });
+    document.querySelector("#undressAll").className = "abtn" + (anyWorn ? "" : " off");
+
     var sig = items.map(function (it) { return it.id; }).join(",");
     var list = document.querySelector("#list");
 

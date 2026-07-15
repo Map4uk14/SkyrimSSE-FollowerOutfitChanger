@@ -57,6 +57,7 @@ EndEvent
 ; survive a save load, so the PrismaUI bridge is re-armed here.
 Function RegisterModEvents()
     RegisterForModEvent("DYF_ToggleItem", "OnDYFToggleItem")
+    RegisterForModEvent("DYF_UndressAll", "OnDYFUndressAll")
 EndFunction
 
 ; Called by DYF_PlayerAlias on load. Re-assert every managed follower's outfit
@@ -170,6 +171,32 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
     follower.QueueNiNodeUpdate()
 
     ; Repaint the overlay from real worn state and keep the poll alive.
+    SendPanelRefresh()
+    RegisterForSingleUpdate(POLL_INTERVAL)
+EndEvent
+
+; Sent by the overlay's "Unequip all" button. The plugin has already stripped
+; every worn piece on the game thread; all that is left is the durable state.
+;
+; Clearing the loadout is what makes it stick: ReassertOutfit re-equips loadout
+; pieces and strips anything worn that is NOT in the loadout, so an empty loadout
+; turns the poll into the thing that keeps them undressed. Without this the very
+; next tick would put the whole outfit straight back on. Their gear stays in their
+; inventory, so re-dressing them is just ticking the boxes again.
+Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender)
+    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    ; First touch: register them so the poll runs at all. EnsureManaged seeds the
+    ; loadout from the worn set - which the plugin has just emptied - and neutralises
+    ; their default outfit, so the engine has nothing of its own to revert to.
+    EnsureManaged(follower)
+    StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    follower.QueueNiNodeUpdate()
     SendPanelRefresh()
     RegisterForSingleUpdate(POLL_INTERVAL)
 EndEvent
