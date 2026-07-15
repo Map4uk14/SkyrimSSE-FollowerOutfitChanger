@@ -13,3 +13,16 @@ Function SetToggleKey(int aKeyCode) global native
 ; Push the MCM overlay accent colour (0xRRGGBB) to the plugin, which forwards it
 ; to the overlay CSS the next time the panel opens.
 Function SetAccentColor(int aRgb) global native
+
+; Mirror a managed follower's saved loadout down to the plugin. The plugin's
+; anti-auto-equip hook runs inside the engine's equip path and cannot call into
+; the VM, so it needs its own copy: it refuses any armor equip on a managed
+; follower unless the piece is in this list. An EMPTY list is meaningful - the
+; follower is managed and should wear nothing. Call this after every change to the
+; loadout. The plugin also keeps this mirror in its own co-save, so on load it is
+; already armed before the engine dresses anyone; our push on load just confirms it.
+Function SetLoadout(Actor akActor, Form[] akItems) global native
+
+; Release everyone: drops the plugin's whole mirror so those followers go back to
+; vanilla auto-equip. Used by the MCM's "Release all followers".
+Function ClearAllLoadouts() global native
