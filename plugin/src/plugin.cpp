@@ -18,6 +18,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     SKSE::Init(a_skse);
     SetupLog();
     Dresser::InstallHooks();
+    Dresser::InitSerialization();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     SKSE::GetPapyrusInterface()->Register(Dresser::RegisterPapyrus);
     logger::info("Dress Your Followers (C++) loaded");

@@ -57,6 +57,122 @@ namespace {
     std::shared_mutex g_loadoutLock;
     std::unordered_map<RE::FormID, std::unordered_set<RE::FormID>> g_loadouts;
 
+    // Because the hook gates OUR equips too (see EquipObjectHook), anything we are
+    // about to equip must already be in the mirror or we refuse ourselves. Papyrus
+    // pushes the authoritative loadout a moment later; these only cover that gap and
+    // are no-ops for an actor we do not manage (the hook lets those through anyway).
+    void MirrorAllow(RE::Actor* a_actor, RE::FormID a_item) {
+        if (!a_actor) {
+            return;
+        }
+        std::unique_lock lock(g_loadoutLock);
+        auto it = g_loadouts.find(a_actor->GetFormID());
+        if (it != g_loadouts.end()) {
+            it->second.insert(a_item);
+        }
+    }
+
+    // Drop a piece from the mirror BEFORE unequipping it, so the engine cannot slip
+    // it straight back on in the gap before Papyrus pushes the real loadout.
+    void MirrorDeny(RE::Actor* a_actor, RE::FormID a_item) {
+        if (!a_actor) {
+            return;
+        }
+        std::unique_lock lock(g_loadoutLock);
+        auto it = g_loadouts.find(a_actor->GetFormID());
+        if (it != g_loadouts.end()) {
+            it->second.erase(a_item);
+        }
+    }
+
+    // Empty the mirror but KEEP the entry: still managed, now wears nothing.
+    void MirrorDenyAll(RE::Actor* a_actor) {
+        if (!a_actor) {
+            return;
+        }
+        std::unique_lock lock(g_loadoutLock);
+        auto it = g_loadouts.find(a_actor->GetFormID());
+        if (it != g_loadouts.end()) {
+            it->second.clear();
+        }
+    }
+
+    // --- Co-save persistence for the mirror --------------------------------
+    //
+    // Papyrus re-pushes the mirror on load (ResumeManagement -> SyncLoadouts), but
+    // Papyrus starts LATE: the engine has already auto-equipped everyone by the time
+    // it runs, so the hook waves that first pass through and the follower wears
+    // whatever they own until the poll strips it. That is exactly the "wears
+    // everything on load, then snaps back" report.
+    //
+    // So the mirror rides in the SKSE co-save instead. SKSE restores it during the
+    // load itself, ahead of the engine dressing actors, and the hook is armed from
+    // the first frame. Papyrus's push then just confirms what is already there.
+    constexpr std::uint32_t kSerUniqueID = 'DYFM';
+    constexpr std::uint32_t kSerLoadoutRecord = 'LOAD';
+    constexpr std::uint32_t kSerVersion = 1;
+
+    void OnSave(SKSE::SerializationInterface* a_intf) {
+        std::shared_lock lock(g_loadoutLock);
+        if (!a_intf->OpenRecord(kSerLoadoutRecord, kSerVersion)) {
+            logger::error("Could not open co-save record; loadout mirror not saved");
+            return;
+        }
+        auto actorCount = static_cast<std::uint32_t>(g_loadouts.size());
+        a_intf->WriteRecordData(actorCount);
+        for (const auto& [actorId, items] : g_loadouts) {
+            a_intf->WriteRecordData(actorId);
+            auto itemCount = static_cast<std::uint32_t>(items.size());
+            a_intf->WriteRecordData(itemCount);
+            for (auto id : items) {
+                a_intf->WriteRecordData(id);
+            }
+        }
+    }
+
+    void OnLoad(SKSE::SerializationInterface* a_intf) {
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts.clear();
+        std::uint32_t type = 0;
+        std::uint32_t version = 0;
+        std::uint32_t length = 0;
+        while (a_intf->GetNextRecordInfo(type, version, length)) {
+            if (type != kSerLoadoutRecord || version != kSerVersion) {
+                continue;
+            }
+            std::uint32_t actorCount = 0;
+            a_intf->ReadRecordData(actorCount);
+            for (std::uint32_t i = 0; i < actorCount; ++i) {
+                RE::FormID rawActor = 0;
+                a_intf->ReadRecordData(rawActor);
+                std::uint32_t itemCount = 0;
+                a_intf->ReadRecordData(itemCount);
+                std::unordered_set<RE::FormID> items;
+                for (std::uint32_t j = 0; j < itemCount; ++j) {
+                    RE::FormID rawItem = 0;
+                    a_intf->ReadRecordData(rawItem);
+                    RE::FormID item = 0;
+                    // Always resolve through the save's load order: a plugin that
+                    // moved would otherwise leave us holding a stranger's FormID.
+                    if (a_intf->ResolveFormID(rawItem, item)) {
+                        items.insert(item);
+                    }
+                }
+                RE::FormID actor = 0;
+                if (a_intf->ResolveFormID(rawActor, actor)) {
+                    g_loadouts[actor] = std::move(items);
+                }
+            }
+        }
+        logger::info("Restored {} loadout mirror(s) from the co-save", g_loadouts.size());
+    }
+
+    // SKSE calls this before loading a save and on a new game.
+    void OnRevert(SKSE::SerializationInterface*) {
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts.clear();
+    }
+
     // Should the engine be allowed to put this armor on this actor?
     //
     // Refuse only for a follower we manage, and only for armor that is not part of
@@ -87,11 +203,17 @@ namespace {
     // TESEquipEvent instead produced an unbounded equip/unequip loop. This refuses
     // the equip at source, so there is nothing to undo.
     //
-    // It patches ONE call site to ActorEquipManager::EquipObject inside the engine's
-    // auto-equip routine - not EquipObject itself - so our own explicit equips (from
-    // the overlay fast path and from Papyrus EquipItemEx) do not pass through here.
-    // The loadout check is a second belt: even if some path did route through, a
-    // loadout piece is still allowed, so a managed follower can always be dressed.
+    // IMPORTANT, learned the hard way: RELOCATION_ID(37938, 38894) IS
+    // ActorEquipManager::EquipObject (see Offset::ActorEquipManager::EquipObject in
+    // CommonLibSSE), and we patch a call site INSIDE it. So EVERY equip flows
+    // through here - the engine's auto-equip, our own overlay fast path, and
+    // Papyrus EquipItemEx alike. This is NOT an engine-only interception.
+    //
+    // That is why the check is loadout membership rather than "is this actor
+    // managed": a blanket block would make a managed follower impossible to dress.
+    // It also means our own equips must be in the mirror BEFORE we call EquipObject,
+    // or we refuse ourselves - see MirrorAllow at the toggle site. (Symptom of
+    // getting this wrong: clicking an item does nothing until the 3s poll fires.)
     //
     // Address + offset are the ones the mature Skyrim Outfit Equipment System NG
     // uses for the same interception; RELOCATION_ID keeps them valid across SE/AE
@@ -553,11 +675,19 @@ namespace {
             if (actor) {
                 if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
                     if (equip) {
+                        // Authorise it in the mirror FIRST: our own EquipObject call
+                        // runs through the anti-auto-equip hook, which would refuse a
+                        // piece that is not in the loadout yet (Papyrus only adds it
+                        // once the event below lands).
+                        MirrorAllow(actor, bound->GetFormID());
                         // force=FALSE so the engine swaps out whatever occupies the
                         // same slot (force-equip would leave the old piece on, so it
                         // kept reading as worn). queue=false, applyNow=true.
                         eqm->EquipObject(actor, bound, nullptr, 1, slot, false, false, false, true);
                     } else {
+                        // Deny first so the hook refuses any engine attempt to put it
+                        // back before Papyrus pushes the updated loadout.
+                        MirrorDeny(actor, bound->GetFormID());
                         // force=TRUE on unequip = prevent the engine re-equipping it.
                         eqm->UnequipObject(actor, bound, nullptr, 1, slot, false, true, false, true, nullptr);
                     }
@@ -649,6 +779,7 @@ namespace {
             if (!actor || !player) {
                 return;
             }
+            MirrorDeny(actor, bound->GetFormID());
             if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
                 eqm->UnequipObject(actor, bound, nullptr, 1, slot, false, true, false, true, nullptr);
             }
@@ -683,6 +814,10 @@ namespace {
             if (!eqm) {
                 return;
             }
+            // Empty the mirror before stripping: while we walk the inventory the
+            // engine would otherwise be free to re-equip pieces we have just taken
+            // off. With an empty loadout the hook refuses every one of them.
+            MirrorDenyAll(actor);
             // GetInventory returns a snapshot, so unequipping while we walk it is
             // safe. Same filter as the wardrobe list, Unarmed included.
             auto inventory = actor->GetInventory([](RE::TESBoundObject& o) {
@@ -919,14 +1054,23 @@ void Dresser::InstallHooks() {
     InstallEquipHook();
 }
 
-void Dresser::OnGameLoaded() {
-    // The mirrored loadouts belong to the save that is going away; a FormID from it
-    // could collide with a different actor in the one being loaded. Drop them and
-    // let Papyrus re-push (ResumeManagement -> SyncLoadouts) for the new save.
-    {
-        std::unique_lock lock(g_loadoutLock);
-        g_loadouts.clear();
+void Dresser::InitSerialization() {
+    auto* ser = SKSE::GetSerializationInterface();
+    if (!ser) {
+        logger::error("No serialization interface; loadout mirror will not persist");
+        return;
     }
+    ser->SetUniqueID(kSerUniqueID);
+    ser->SetSaveCallback(OnSave);
+    ser->SetLoadCallback(OnLoad);
+    ser->SetRevertCallback(OnRevert);
+}
+
+void Dresser::OnGameLoaded() {
+    // NOTE: do NOT clear the mirror here. This runs at kPostLoadGame, i.e. AFTER
+    // SKSE has already restored it from the co-save, so clearing would throw away
+    // the very data that arms the hook before the engine dresses anyone. Stale
+    // entries are handled by OnRevert, which SKSE calls before each load.
     SKSE::GetTaskInterface()->AddTask([]() {
         g_targetId.store(0);
         if (g_prisma && g_view && g_open.load()) {

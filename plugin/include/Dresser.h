@@ -13,6 +13,12 @@ namespace Dresser {
     // is what stops the "wears everything, then snaps back" flicker at source.
     void InstallHooks();
 
+    // Registers the SKSE co-save callbacks (call from SKSEPluginLoad). The hook's
+    // loadout mirror rides in the co-save so it is restored DURING the load, before
+    // the engine dresses actors - Papyrus pushes it too, but starts far too late to
+    // beat that first auto-equip pass.
+    void InitSerialization();
+
     // Called once PrismaUI is available (SKSE kDataLoaded). Creates the view and
     // registers the input toggle + JS listeners. Safe no-op if PrismaUI missing.
     void Init();
