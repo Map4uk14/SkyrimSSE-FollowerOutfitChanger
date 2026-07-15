@@ -100,7 +100,6 @@
     color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
   }
   .abtn:hover { color: #ff9a9a; border-color: rgba(255,154,154,0.45); background: rgba(255,255,255,0.06); }
-  .abtn.off { opacity: 0.4; pointer-events: none; }
   #filter {
     width: 100%; box-sizing: border-box;
     background: rgba(0,0,0,0.30); color: #e8e8ea;
@@ -597,11 +596,6 @@
     var items = (data.items || []).slice().sort(function (a, b) {
       return a.name.localeCompare(b.name);
     });
-    // Nothing on -> nothing to take off. Set before the early returns below so
-    // every repaint path (reconcile / rebuild / empty) keeps the button honest.
-    var anyWorn = items.some(function (it) { return !!it.worn; });
-    document.querySelector("#undressAll").className = "abtn" + (anyWorn ? "" : " off");
-
     var sig = items.map(function (it) { return it.id; }).join(",");
     var list = document.querySelector("#list");
 
