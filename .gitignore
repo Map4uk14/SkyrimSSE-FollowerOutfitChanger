@@ -3,6 +3,12 @@
 .mcp.json
 .claude/settings.local.json
 
+# Local design/instruction docs — kept on disk, never published
+CLAUDE.md
+Specs.md
+README-DEV.md
+NEXUS-DESCRIPTION.md
+
 # Secrets
 *.pat
 *.token

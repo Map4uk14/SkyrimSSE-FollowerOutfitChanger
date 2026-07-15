@@ -47,12 +47,33 @@
   #change { font-size: 12px; }
   #close { font-size: 16px; }
 
-  #list, #picker { overflow-y: auto; padding: 6px 6px 10px; }
+  #list, #picker, #plist { overflow-y: auto; padding: 6px 6px 10px; }
   .row, .frow {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 10px; border-radius: 7px; cursor: pointer;
   }
   .row:hover, .frow:hover { background: rgba(255,255,255,0.06); }
+
+  /* Follower / Yours tab strip (wardrobe view only). */
+  #tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
+  .tab {
+    flex: 1; text-align: center; padding: 7px 0; font-size: 12px;
+    color: #9aa0aa; cursor: pointer; border-bottom: 2px solid transparent;
+  }
+  .tab:hover { color: #cfd2d8; }
+  .tab.active { color: #6ee7a8; border-bottom-color: #6ee7a8; }
+
+  /* Per-row "return to your inventory" button on follower rows. */
+  .ret {
+    width: 22px; flex: 0 0 auto; text-align: center; font-size: 15px;
+    color: #6b7280; border-radius: 5px; line-height: 20px;
+  }
+  .ret:hover { color: #ff9a9a; background: rgba(255,255,255,0.10); }
+  /* "Give & equip" affordance on Yours-tab rows. */
+  .add {
+    width: 22px; flex: 0 0 auto; text-align: center; font-size: 18px;
+    font-weight: 600; color: #6ee7a8; line-height: 20px;
+  }
   .row .box {
     width: 18px; height: 18px; flex: 0 0 18px; border-radius: 4px;
     border: 1.5px solid #6b7280; display: flex; align-items: center; justify-content: center;
@@ -66,6 +87,9 @@
   svg.gi { width: 100%; height: 100%; display: block; fill: currentColor; }
   .frow .chev { color: #6b7280; font-size: 14px; }
   #empty { padding: 18px 14px; color: #9aa0aa; font-size: 13px; }
+  /* Accent-tinted text (e.g. the picker's Rescan link). The default accent lives
+     here; dyfAccent() injects an override stylesheet when the MCM sets one. */
+  .again-accent { color: #6ee7a8; }
 
   #filterbar { padding: 8px 12px 4px; }
   #filter {
@@ -113,9 +137,14 @@
       <div id="close" class="hbtn" onclick="window.dyf_close('')">&#10005;</div>
     </div>
   </div>
+  <div id="tabs" style="display:none">
+    <div id="tabFollower" class="tab active">Follower</div>
+    <div id="tabPlayer" class="tab">Yours</div>
+  </div>
   <div id="filterbar" style="display:none"><input id="filter" type="text" placeholder="Filter items…"></div>
   <div id="picker"></div>
   <div id="list" style="display:none"></div>
+  <div id="plist" style="display:none"></div>
   <div id="details" class="hint" style="display:none">Hover an item for details</div>
 </div>
 
@@ -126,8 +155,9 @@
   // The plugin decides which to show: F4 on a follower opens their wardrobe
   // directly; otherwise the picker. The "Change" button returns to the picker.
 
-  var rowsById = {};   // wardrobe: id -> { setWorn(bool), worn, slot }
-  var currentSig = ""; // signature of the current item set (to detect changes)
+  var rowsById = {};   // follower wardrobe: id -> { setWorn(bool), worn, slot }
+  var prowsById = {};  // player ("Yours") tab: id -> { name, el }
+  var currentSig = ""; // signature of the current follower item set (to detect changes)
 
   // Diagnostic: send a line to the SKSE log via the dyf_log C++ listener.
   function dlog(msg) { try { if (window.dyf_log) window.dyf_log(String(msg)); } catch (e) {} }
@@ -162,13 +192,81 @@
     }
   }
 
-  function show(which) {
-    document.querySelector("#picker").style.display    = which === "picker" ? "" : "none";
-    document.querySelector("#list").style.display      = which === "list"   ? "" : "none";
-    document.querySelector("#change").style.display    = which === "list"   ? "" : "none";
-    document.querySelector("#details").style.display   = which === "list"   ? "" : "none";
-    document.querySelector("#filterbar").style.display = which === "list"   ? "" : "none";
+  // Overlay accent colour. The plugin calls dyfAccent("#rrggbb") (from the MCM
+  // color setting) when the panel opens. Rather than rely on CSS var() support in
+  // Ultralight, we inject/replace a small stylesheet that overrides the accent
+  // selectors - guaranteed to apply regardless of the WebKit core's age.
+  window.dyfAccent = function (hex) {
+    try {
+      if (typeof hex !== "string" || hex.charAt(0) !== "#") { return; }
+      var css =
+        ".row.on .box{background:" + hex + ";border-color:" + hex + ";}" +
+        ".row.on .slot-icon{color:" + hex + ";}" +
+        "#filter:focus{border-color:" + hex + ";}" +
+        ".again-accent{color:" + hex + ";}" +
+        ".add{color:" + hex + ";}" +
+        ".tab.active{color:" + hex + ";border-bottom-color:" + hex + ";}";
+      var el = document.getElementById("accentStyle");
+      if (!el) {
+        el = document.createElement("style");
+        el.id = "accentStyle";
+        document.head.appendChild(el);
+      }
+      el.textContent = css;
+    } catch (e) { dlog("dyfAccent ERR: " + e); }
+  };
+
+  // Panel has two top-level modes: the follower "picker" and the "wardrobe".
+  // Within the wardrobe, a tab switches between the follower's own items and the
+  // player's ("Yours"). Refreshes from the plugin repaint the underlying lists
+  // WITHOUT yanking the user off whichever tab they're on.
+  var panelMode = "picker";   // "picker" | "wardrobe"
+  var activeTab = "follower"; // "follower" | "player"
+
+  function showPicker() {
+    panelMode = "picker";
+    document.querySelector("#picker").style.display    = "";
+    document.querySelector("#tabs").style.display      = "none";
+    document.querySelector("#filterbar").style.display = "none";
+    document.querySelector("#list").style.display      = "none";
+    document.querySelector("#plist").style.display     = "none";
+    document.querySelector("#details").style.display   = "none";
+    document.querySelector("#change").style.display    = "none";
   }
+
+  function enterWardrobe() {
+    panelMode = "wardrobe";
+    document.querySelector("#picker").style.display    = "none";
+    document.querySelector("#tabs").style.display      = "";
+    document.querySelector("#filterbar").style.display = "";
+    document.querySelector("#details").style.display   = "";
+    document.querySelector("#change").style.display    = "";
+    applyTabView();
+  }
+
+  function applyTabView() {
+    var f = activeTab === "follower";
+    document.querySelector("#list").style.display  = f ? "" : "none";
+    document.querySelector("#plist").style.display = f ? "none" : "";
+    document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
+    document.querySelector("#tabPlayer").className   = "tab" + (f ? "" : " active");
+    document.querySelector("#filter").placeholder = f ? "Filter items…" : "Filter your items…";
+    applyFilter();
+  }
+
+  function setTab(tab) {
+    if (activeTab === tab) { return; }
+    activeTab = tab;
+    applyTabView();
+    // Lazy-load the player's inventory the first time (and each time) Yours opens,
+    // so it reflects anything picked up since the panel was opened.
+    if (tab === "player") {
+      try { if (window.dyf_playerlist) { window.dyf_playerlist(""); } } catch (e) { dlog("playerlist req ERR: " + e); }
+    }
+  }
+
+  document.querySelector("#tabFollower").onclick = function () { setTab("follower"); };
+  document.querySelector("#tabPlayer").onclick   = function () { setTab("player"); };
 
   // ---- Filter --------------------------------------------------------------
 
@@ -178,8 +276,9 @@
     applyFilter();
   });
   function applyFilter() {
-    Object.keys(rowsById).forEach(function (id) {
-      var r = rowsById[id];
+    var map = activeTab === "player" ? prowsById : rowsById;
+    Object.keys(map).forEach(function (id) {
+      var r = map[id];
       var match = !filterText || r.name.indexOf(filterText) !== -1;
       r.el.style.display = match ? "" : "none";
     });
@@ -196,7 +295,7 @@
 
     var picker = document.querySelector("#picker");
     picker.innerHTML = "";
-    show("picker");
+    showPicker();
 
     var followers = data.followers || [];
     if (!followers.length) {
@@ -207,7 +306,8 @@
       // so an empty list may just be early - offer a one-click rescan.
       var again = document.createElement("span");
       again.textContent = "↻ Rescan";
-      again.style.cssText = "color:#6ee7a8;cursor:pointer;";
+      again.className = "again-accent";
+      again.style.cursor = "pointer";
       again.onclick = function () { window.dyf_showpicker(""); };
       empty.appendChild(again);
       picker.appendChild(empty);
@@ -405,10 +505,21 @@
     var icon = document.createElement("div");
     icon.className = "slot-icon";
     icon.innerHTML = itemIcon(item);
+    // Return-to-player button. Its own click handler stops propagation so it does
+    // not also toggle the row's equip state.
+    var ret = document.createElement("div");
+    ret.className = "ret";
+    ret.innerHTML = "&#8617;"; // ↩
+    ret.title = "Return to your inventory";
+    ret.onclick = function (e) {
+      e.stopPropagation();
+      try { window.dyf_return(item.id); } catch (err) { dlog("dyf_return ERR: " + err); }
+    };
 
     row.appendChild(box);
     row.appendChild(label);
     row.appendChild(icon);
+    row.appendChild(ret);
 
     row.onmouseenter = function () { setDetails(item); };
 
@@ -456,7 +567,10 @@
   function render_body(data) {
     document.querySelector("#subtitle").textContent =
       data.name ? ("Dressing: " + data.name) : "Look at a follower";
-    show("list");
+    // First paint after the picker → enter the wardrobe on the Follower tab. A
+    // later refresh (poll / after a toggle) must NOT pull the user off the Yours
+    // tab, so only switch modes when we aren't already in the wardrobe.
+    if (panelMode !== "wardrobe") { activeTab = "follower"; enterWardrobe(); }
 
     // Fixed alphabetical order so a row never moves when its worn state changes.
     var items = (data.items || []).slice().sort(function (a, b) {
@@ -495,6 +609,69 @@
     });
     applyFilter(); // keep any active filter after a rebuild
   };
+
+  // ---- Yours tab (give from the player's inventory) ------------------------
+
+  // A player-inventory row: click anywhere gives one copy to the follower and
+  // equips it. No checkbox/worn state - it's a one-shot action, like the picker.
+  function makePlayerRow(item) {
+    var row = document.createElement("div");
+    row.className = "frow";
+    var icon = document.createElement("div");
+    icon.className = "slot-icon";
+    icon.innerHTML = itemIcon(item);
+    var label = document.createElement("div");
+    label.className = "label";
+    label.textContent = item.name;
+    var add = document.createElement("div");
+    add.className = "add";
+    add.innerHTML = "&#43;"; // +
+    add.title = "Give & equip on the follower";
+
+    row.appendChild(icon);
+    row.appendChild(label);
+    row.appendChild(add);
+
+    row.onmouseenter = function () { setDetails(item); };
+    row.onclick = function () {
+      try { window.dyf_give(item.id); } catch (err) { dlog("dyf_give ERR: " + err); }
+    };
+
+    var entry = { name: (item.name || "").toLowerCase(), el: row };
+    return { el: row, entry: entry };
+  }
+
+  window.dyfPlayerItems = function (payload) {
+    var data;
+    try { data = dyfDecode(payload); }
+    catch (e) { dlog("dyfPlayerItems decode ERR: " + e); return; }
+    try { render_player(data); }
+    catch (e) { dlog("dyfPlayerItems body ERR: " + e + (e && e.stack ? " " + e.stack : "")); }
+  };
+
+  function render_player(data) {
+    var items = (data.items || []).slice().sort(function (a, b) {
+      return a.name.localeCompare(b.name);
+    });
+    var plist = document.querySelector("#plist");
+    prowsById = {};
+    plist.innerHTML = "";
+
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.id = "empty";
+      empty.textContent = "No wearable items in your inventory.";
+      plist.appendChild(empty);
+      return;
+    }
+
+    items.forEach(function (it) {
+      var made = makePlayerRow(it);
+      prowsById[it.id] = made.entry;
+      plist.appendChild(made.el);
+    });
+    applyFilter(); // keep any active filter after a rebuild
+  }
 </script>
 </body>
 </html>

@@ -20,6 +20,18 @@ string Property LOADOUT_KEY = "DYF_Loadout" AutoReadOnly
 ; Re-assert cadence while at least one managed follower is loaded.
 float Property POLL_INTERVAL = 3.0 AutoReadOnly
 
+; After a cell/location change the engine re-dresses followers from their loose
+; inventory; a follower may also stream in a moment after the transition. So on
+; those events we run an immediate re-assert and then a short burst of quick
+; follow-up ticks (FAST_TICKS x FAST_INTERVAL) before relaxing back to the normal
+; poll - this closes the "wears random gear for ~3s, then snaps back" window.
+float Property FAST_INTERVAL = 0.5 AutoReadOnly
+int Property FAST_TICKS = 6 AutoReadOnly
+
+; Remaining quick follow-up ticks in the current burst (persists in the save;
+; harmless if a burst is mid-flight across a load).
+int fastTicksRemaining = 0
+
 ; -------------------------------------------------------------------
 ; Properties (filled in the Creation Kit)
 ; -------------------------------------------------------------------
@@ -50,22 +62,32 @@ EndFunction
 ; Called by DYF_PlayerAlias on load. Re-assert every managed follower's outfit
 ; and resume the poll (SKSE update registrations don't survive a load).
 Function ResumeManagement()
+    SyncSettings()
     if StorageUtil.FormListCount(none, MANAGED_KEY) > 0
         ReassertAllLoaded()
         RegisterForSingleUpdate(POLL_INTERVAL)
     endif
 EndFunction
 
+; Push MCM-configured plugin settings (overlay hotkey + accent colour) down to the
+; SKSE plugin. The plugin resets these to its own defaults on every launch, so this
+; runs on each game load and whenever the MCM value changes (see DYF_MCM). A key of
+; 0 means the MCM has not been read yet - leave the plugin default in place; -1
+; means the user deliberately unbound the key.
+Function SyncSettings()
+    int k = MCM.GetModSettingInt("DressYourFollowers", "iOpenKey:General")
+    if k != 0
+        DYF_Native.SetToggleKey(k)
+    endif
+    int accent = MCM.GetModSettingInt("DressYourFollowers", "iAccent:General")
+    if accent != 0
+        DYF_Native.SetAccentColor(accent)
+    endif
+EndFunction
+
 ; -------------------------------------------------------------------
 ; Helpers
 ; -------------------------------------------------------------------
-
-; Corner notification, gated by the MCM "Show status messages" toggle.
-Function Notify(string asText)
-    if MCM.GetModSettingBool("DressYourFollowers", "bNotify:General")
-        Debug.Notification(asText)
-    endif
-EndFunction
 
 ; Mirrors the plugin's IsFollower (teammate OR follower faction). No combat or
 ; hostility test here: the plugin has already applied the equip by the time this
@@ -118,7 +140,6 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
 
     if strArg == "unequip"
         StorageUtil.FormListRemove(follower, LOADOUT_KEY, piece, true)
-        Notify("Removed: " + piece.GetName())
     else
         ; Adding an armor piece: drop any loadout piece that fights for the same
         ; biped slot so the new one wins cleanly. Weapons have no biped slot, so
@@ -138,7 +159,6 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
         if !StorageUtil.FormListHas(follower, LOADOUT_KEY, piece)
             StorageUtil.FormListAdd(follower, LOADOUT_KEY, piece)
         endif
-        Notify("Equipped: " + piece.GetName())
     endif
 
     ; NOTE: we do NOT re-apply equipment here. The SKSE plugin already equipped/
@@ -315,6 +335,22 @@ Function ReassertOutfit(Actor akActor)
     endwhile
 EndFunction
 
+; Immediate re-assert triggered by a cell/location change (see FAST_* above).
+; Corrects the outfit now, then kicks off a short fast-tick burst so followers
+; that stream in just after the transition are caught within half a second
+; instead of on the slow poll.
+Function ReassertSoon()
+    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+        return
+    endif
+    if StorageUtil.FormListCount(none, MANAGED_KEY) <= 0
+        return
+    endif
+    ReassertAllLoaded()
+    fastTicksRemaining = FAST_TICKS
+    RegisterForSingleUpdate(FAST_INTERVAL)
+EndFunction
+
 Function ReassertAllLoaded()
     int n = StorageUtil.FormListCount(none, MANAGED_KEY)
     int i = 0
@@ -327,6 +363,32 @@ Function ReassertAllLoaded()
     endwhile
 EndFunction
 
+; Managed-follower names for the MCM read-only list (Spec 6). Element 0 is a
+; count summary so the collapsed menu row shows "N dressed" at a glance; the rest
+; are the follower display names. Returns a single "None dressed yet" entry when
+; the registry is empty.
+string[] Function GetManagedNames()
+    int n = StorageUtil.FormListCount(none, MANAGED_KEY)
+    if n <= 0
+        string[] empty = new string[1]
+        empty[0] = "None dressed yet"
+        return empty
+    endif
+    string[] names = Utility.CreateStringArray(n + 1)
+    names[0] = n + " dressed"
+    int i = 0
+    while i < n
+        Actor a = StorageUtil.FormListGet(none, MANAGED_KEY, i) as Actor
+        if a
+            names[i + 1] = a.GetDisplayName()
+        else
+            names[i + 1] = "(unknown)"
+        endif
+        i += 1
+    endwhile
+    return names
+EndFunction
+
 Event OnUpdate()
     if MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
         ReassertAllLoaded()
@@ -337,9 +399,15 @@ Event OnUpdate()
     if DYF_Native.GetPanelTarget()
         SendPanelRefresh()
     endif
-    ; Keep polling only while there is someone to manage.
+    ; Keep polling only while there is someone to manage. While a burst is
+    ; active (just after a transition) tick quickly, then relax to the slow poll.
     if StorageUtil.FormListCount(none, MANAGED_KEY) > 0
-        RegisterForSingleUpdate(POLL_INTERVAL)
+        if fastTicksRemaining > 0
+            fastTicksRemaining -= 1
+            RegisterForSingleUpdate(FAST_INTERVAL)
+        else
+            RegisterForSingleUpdate(POLL_INTERVAL)
+        endif
     endif
 EndEvent
 
@@ -356,5 +424,4 @@ Function ClearAllManaged()
         i += 1
     endwhile
     StorageUtil.FormListClear(none, MANAGED_KEY)
-    Notify("Dress Your Followers: released all managed followers.")
 EndFunction

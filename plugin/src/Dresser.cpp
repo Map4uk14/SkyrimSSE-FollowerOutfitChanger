@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,7 +24,15 @@ namespace {
     // stale pointer would crash). Resolve with ResolveTarget() at every use.
     std::atomic<RE::FormID> g_targetId{0};
 
-    constexpr std::uint32_t kToggleKey = 0x3E;  // DirectX scancode for F4
+    // Overlay open/close key (DirectX scancode). Default F4 (0x3E); the MCM pushes
+    // the user's binding here via DYF_Native.SetToggleKey. -1 = unbound (disabled).
+    // The plugin resets to this default on every launch, so Papyrus re-pushes the
+    // saved MCM value on each game load.
+    std::atomic<std::int32_t> g_toggleKey{0x3E};
+
+    // Overlay accent colour as 0xRRGGBB, pushed from the MCM via SetAccentColor.
+    // -1 = no custom accent set yet (the view keeps its built-in theme colour).
+    std::atomic<std::int32_t> g_accentRgb{-1};
 
     // Vanilla CurrentFollowerFaction [FACT:0005C84E].
     constexpr RE::FormID kFollowerFactionId = 0x0005C84E;
@@ -161,6 +170,89 @@ namespace {
 
     void PushFollowers();  // defined below
 
+    // Build the "{name, items[]}" wardrobe JSON for one actor's wearable inventory
+    // (armor + weapons). "worn" is computed against a_source, so it is meaningful
+    // for the follower's own list; the player-items ("Yours") tab ignores it. MUST
+    // run on the main thread (reads live inventory).
+    std::string BuildInventoryJson(RE::Actor* a_source, const char* a_label) {
+        std::string json = "{\"name\":\"";
+        json += JsonEscape(a_label);
+        json += "\",\"items\":[";
+        auto inventory = a_source->GetInventory([](RE::TESBoundObject& o) {
+            if (o.IsArmor()) {
+                return true;
+            }
+            // Skyrim's "Unarmed" pseudo-weapon sits in most actors' inventories
+            // but is not a wearable item, so keep it out of the wardrobe.
+            auto weap = o.As<RE::TESObjectWEAP>();
+            return weap && !weap->IsHandToHandMelee();
+        });
+        bool first = true;
+        for (auto& [obj, data] : inventory) {
+            auto& [count, entry] = data;
+            if (count <= 0 || !obj) {
+                continue;
+            }
+            auto armo = obj->As<RE::TESObjectARMO>();
+            auto weap = armo ? nullptr : obj->As<RE::TESObjectWEAP>();
+            if (!armo && !weap) {
+                continue;
+            }
+            RE::TESForm* form = armo ? static_cast<RE::TESForm*>(armo)
+                                     : static_cast<RE::TESForm*>(weap);
+
+            char idbuf[16];
+            std::snprintf(idbuf, sizeof(idbuf), "0x%08X", form->GetFormID());
+
+            // kind 0 = armor (biped slot mask, armor rating, light/heavy/cloth),
+            // kind 1 = weapon (weapon type 0-9, base damage). "worn" is whether
+            // a_source has it equipped - by biped slot for armor, by hand for
+            // weapons.
+            bool worn;
+            char statbuf[128];
+            const char* ench;
+            if (armo) {
+                worn = a_source->GetWornArmor(armo->GetFormID()) != nullptr;
+                std::snprintf(statbuf, sizeof(statbuf),
+                    ",\"kind\":0,\"slot\":%u,\"armor\":%d,\"atype\":%d,\"weight\":%.1f,\"value\":%d",
+                    static_cast<std::uint32_t>(armo->GetSlotMask()),
+                    static_cast<int>(armo->GetArmorRating() + 0.5f),
+                    static_cast<int>(armo->GetArmorType()),
+                    armo->weight, armo->value);
+                ench = armo->formEnchanting ? SafeName(armo->formEnchanting) : "";
+            } else {
+                auto rh = a_source->GetEquippedObject(false);
+                auto lh = a_source->GetEquippedObject(true);
+                auto wid = weap->GetFormID();
+                worn = (rh && rh->GetFormID() == wid) || (lh && lh->GetFormID() == wid);
+                std::snprintf(statbuf, sizeof(statbuf),
+                    ",\"kind\":1,\"wtype\":%d,\"damage\":%d,\"weight\":%.1f,\"value\":%d",
+                    static_cast<int>(weap->GetWeaponType()),
+                    static_cast<int>(weap->GetAttackDamage()),
+                    weap->weight, weap->value);
+                ench = weap->formEnchanting ? SafeName(weap->formEnchanting) : "";
+            }
+
+            if (!first) {
+                json += ',';
+            }
+            first = false;
+            json += "{\"id\":\"";
+            json += idbuf;
+            json += "\",\"name\":\"";
+            json += JsonEscape(SafeName(form));
+            json += '"';  // close the name string; statbuf begins with ",\"kind\"..."
+            json += statbuf;
+            json += ",\"ench\":\"";
+            json += JsonEscape(ench);
+            json += "\",\"worn\":";
+            json += worn ? "true" : "false";
+            json += '}';
+        }
+        json += "]}";
+        return json;
+    }
+
     // Build the JSON payload for the current target and push it to the view.
     // MUST run on the main thread (reads live inventory).
     void PushList() {
@@ -175,86 +267,33 @@ namespace {
             PushFollowers();
             return;
         }
-        std::string json;
-        {
-            json = "{\"name\":\"";
-            json += JsonEscape(SafeActorName(actor));
-            json += "\",\"items\":[";
-            auto inventory = actor->GetInventory([](RE::TESBoundObject& o) {
-                return o.IsArmor() || o.IsWeapon();
-            });
-            bool first = true;
-            for (auto& [obj, data] : inventory) {
-                auto& [count, entry] = data;
-                if (count <= 0 || !obj) {
-                    continue;
-                }
-                auto armo = obj->As<RE::TESObjectARMO>();
-                auto weap = armo ? nullptr : obj->As<RE::TESObjectWEAP>();
-                if (!armo && !weap) {
-                    continue;
-                }
-                RE::TESForm* form = armo ? static_cast<RE::TESForm*>(armo)
-                                         : static_cast<RE::TESForm*>(weap);
-
-                char idbuf[16];
-                std::snprintf(idbuf, sizeof(idbuf), "0x%08X", form->GetFormID());
-
-                // kind 0 = armor (biped slot mask, armor rating, light/heavy/cloth),
-                // kind 1 = weapon (weapon type 0-9, base damage). "worn" is whether
-                // it is currently equipped - by biped slot for armor, by hand for
-                // weapons.
-                bool worn;
-                char statbuf[128];
-                const char* ench;
-                if (armo) {
-                    worn = actor->GetWornArmor(armo->GetFormID()) != nullptr;
-                    std::snprintf(statbuf, sizeof(statbuf),
-                        ",\"kind\":0,\"slot\":%u,\"armor\":%d,\"atype\":%d,\"weight\":%.1f,\"value\":%d",
-                        static_cast<std::uint32_t>(armo->GetSlotMask()),
-                        static_cast<int>(armo->GetArmorRating() + 0.5f),
-                        static_cast<int>(armo->GetArmorType()),
-                        armo->weight, armo->value);
-                    ench = armo->formEnchanting ? SafeName(armo->formEnchanting) : "";
-                } else {
-                    auto rh = actor->GetEquippedObject(false);
-                    auto lh = actor->GetEquippedObject(true);
-                    auto wid = weap->GetFormID();
-                    worn = (rh && rh->GetFormID() == wid) || (lh && lh->GetFormID() == wid);
-                    std::snprintf(statbuf, sizeof(statbuf),
-                        ",\"kind\":1,\"wtype\":%d,\"damage\":%d,\"weight\":%.1f,\"value\":%d",
-                        static_cast<int>(weap->GetWeaponType()),
-                        static_cast<int>(weap->GetAttackDamage()),
-                        weap->weight, weap->value);
-                    ench = weap->formEnchanting ? SafeName(weap->formEnchanting) : "";
-                }
-
-                if (!first) {
-                    json += ',';
-                }
-                first = false;
-                json += "{\"id\":\"";
-                json += idbuf;
-                json += "\",\"name\":\"";
-                json += JsonEscape(SafeName(form));
-                json += '"';  // close the name string; statbuf begins with ",\"kind\"..."
-                json += statbuf;
-                json += ",\"ench\":\"";
-                json += JsonEscape(ench);
-                json += "\",\"worn\":";
-                json += worn ? "true" : "false";
-                json += '}';
-            }
-            json += "]}";
-        }
         // Call the JS receiver via Invoke (raw JS eval) rather than InteropCall
         // (InteropCall routes through a separate interop registry this view never
         // joins, so it silently no-ops). The JSON is base64-encoded so the JS
         // snippet is always parseable regardless of item/enchant name bytes.
         std::string call = "dyfRender(\"";
-        call += Base64Encode(json);
+        call += Base64Encode(BuildInventoryJson(actor, SafeActorName(actor)));
         call += "\")";
         g_prisma->Invoke(g_view, call.c_str());
+    }
+
+    // Push the player's wearable inventory to the overlay's "Yours" tab.
+    void PushPlayerList() {
+        if (!g_prisma || !g_view) {
+            return;
+        }
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return;
+        }
+        std::string call = "dyfPlayerItems(\"";
+        call += Base64Encode(BuildInventoryJson(player, "Your items"));
+        call += "\")";
+        g_prisma->Invoke(g_view, call.c_str());
+    }
+
+    void PushPlayerListSoon() {
+        SKSE::GetTaskInterface()->AddTask([]() { PushPlayerList(); });
     }
 
     void PushListSoon() {
@@ -319,6 +358,21 @@ namespace {
         SKSE::GetTaskInterface()->AddTask([]() { PushFollowers(); });
     }
 
+    // Push the configured accent colour to the overlay CSS. No-op until the MCM
+    // has supplied one (g_accentRgb < 0), so the view keeps its default theme.
+    void PushAccent() {
+        if (!g_prisma || !g_view) {
+            return;
+        }
+        std::int32_t rgb = g_accentRgb.load();
+        if (rgb < 0) {
+            return;
+        }
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "dyfAccent(\"#%06X\")", rgb & 0xFFFFFF);
+        g_prisma->Invoke(g_view, buf);
+    }
+
     void OpenPanel() {
         // Only in normal gameplay - not at the main menu, in a loading screen or
         // while a pausing menu (journal, console, ...) is up.
@@ -331,6 +385,7 @@ namespace {
         g_prisma->Show(g_view);
         g_prisma->Focus(g_view, false, false);  // pauseGame=false: watch them live
         g_open.store(true);
+        PushAccent();  // apply the user's accent before the list paints
 
         // If the crosshair is already on a follower, dress them straight away;
         // otherwise show the nearby-follower picker so the user can choose.
@@ -421,6 +476,109 @@ namespace {
         // applied the change, and RefreshSink repaints from the real worn state.
     }
 
+    // "Give" (Yours tab): move one copy of the player's item to the follower and
+    // equip it. argument = "0xFORMID". Same equip fast-path as OnJsToggle, plus the
+    // player->follower inventory move; Papyrus records it in the saved loadout.
+    void OnJsGive(const char* a_arg) {
+        if (!a_arg) {
+            return;
+        }
+        RE::FormID id = static_cast<RE::FormID>(std::strtoul(a_arg, nullptr, 16));
+        SKSE::GetTaskInterface()->AddTask([id]() {
+            auto form = RE::TESForm::LookupByID(id);
+            if (!form) {
+                return;
+            }
+            RE::TESBoundObject* bound = nullptr;
+            const RE::BGSEquipSlot* slot = nullptr;
+            if (auto armo = form->As<RE::TESObjectARMO>()) {
+                bound = armo;
+                slot = armo->GetEquipSlot();
+            } else if (auto weap = form->As<RE::TESObjectWEAP>()) {
+                bound = weap;
+                slot = weap->GetEquipSlot();
+            }
+            if (!bound) {
+                return;
+            }
+            auto actor = ResolveTarget();
+            auto player = RE::PlayerCharacter::GetSingleton();
+            if (!actor || !player) {
+                return;
+            }
+            // Move one from the player to the follower, then equip it (force=false
+            // so a same-slot piece is swapped out, matching OnJsToggle's equip).
+            player->RemoveItem(bound, 1, RE::ITEM_REMOVE_REASON::kStoreInContainer, nullptr, actor);
+            if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
+                eqm->EquipObject(actor, bound, nullptr, 1, slot, false, false, false, true);
+            }
+            // Papyrus keeps the durable state: add the piece to the saved loadout.
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_ToggleItem";
+                ev.strArg = "equip";
+                ev.numArg = 0.0f;
+                ev.sender = bound;
+                source->SendEvent(&ev);
+            }
+            PushListSoon();        // the piece now shows in the follower's tab
+            PushPlayerListSoon();  // and its count dropped in the Yours tab
+        });
+    }
+
+    // "Return" (follower row): unequip an item on the follower and move one copy
+    // back to the player. argument = "0xFORMID".
+    void OnJsReturn(const char* a_arg) {
+        if (!a_arg) {
+            return;
+        }
+        RE::FormID id = static_cast<RE::FormID>(std::strtoul(a_arg, nullptr, 16));
+        SKSE::GetTaskInterface()->AddTask([id]() {
+            auto form = RE::TESForm::LookupByID(id);
+            if (!form) {
+                return;
+            }
+            RE::TESBoundObject* bound = nullptr;
+            const RE::BGSEquipSlot* slot = nullptr;
+            if (auto armo = form->As<RE::TESObjectARMO>()) {
+                bound = armo;
+                slot = armo->GetEquipSlot();
+            } else if (auto weap = form->As<RE::TESObjectWEAP>()) {
+                bound = weap;
+                slot = weap->GetEquipSlot();
+            }
+            if (!bound) {
+                return;
+            }
+            auto actor = ResolveTarget();
+            auto player = RE::PlayerCharacter::GetSingleton();
+            if (!actor || !player) {
+                return;
+            }
+            if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
+                eqm->UnequipObject(actor, bound, nullptr, 1, slot, false, true, false, true, nullptr);
+            }
+            // Papyrus: drop the piece from the saved loadout (unequip intent).
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_ToggleItem";
+                ev.strArg = "unequip";
+                ev.numArg = 0.0f;
+                ev.sender = bound;
+                source->SendEvent(&ev);
+            }
+            // Move one copy back to the player (removes it from the follower).
+            actor->RemoveItem(bound, 1, RE::ITEM_REMOVE_REASON::kStoreInContainer, nullptr, player);
+            PushListSoon();
+            PushPlayerListSoon();
+        });
+    }
+
+    // Yours tab activated: (re)send the player's wearable inventory.
+    void OnJsPlayerList(const char*) {
+        SKSE::GetTaskInterface()->AddTask([]() { PushPlayerList(); });
+    }
+
     void OnJsClose(const char*) {
         SKSE::GetTaskInterface()->AddTask([]() { ClosePanel(); });
     }
@@ -462,6 +620,17 @@ namespace {
         return ResolveTarget();
     }
 
+    // Papyrus native: DYF_Native.SetToggleKey(int) - the MCM-bound overlay key
+    // (DirectX scancode; -1 = unbound). Pushed on load and on MCM change.
+    void SetToggleKeyImpl(RE::StaticFunctionTag*, std::int32_t a_key) {
+        g_toggleKey.store(a_key);
+    }
+
+    // Papyrus native: DYF_Native.SetAccentColor(int) - overlay accent as 0xRRGGBB.
+    void SetAccentColorImpl(RE::StaticFunctionTag*, std::int32_t a_rgb) {
+        g_accentRgb.store(a_rgb);
+    }
+
     class KeySink : public RE::BSTEventSink<RE::InputEvent*> {
     public:
         static KeySink* GetSingleton() {
@@ -482,7 +651,9 @@ namespace {
                 if (!btn || btn->GetDevice() != RE::INPUT_DEVICE::kKeyboard || !btn->IsDown()) {
                     continue;
                 }
-                if (btn->GetIDCode() == kToggleKey && g_prisma && g_view) {
+                auto key = g_toggleKey.load();
+                if (key >= 0 && btn->GetIDCode() == static_cast<std::uint32_t>(key) &&
+                    g_prisma && g_view) {
                     if (g_open.load()) {
                         ClosePanel();
                     } else {
@@ -535,6 +706,9 @@ void Dresser::Init() {
     });
 
     g_prisma->RegisterJSListener(g_view, "dyf_toggle", OnJsToggle);
+    g_prisma->RegisterJSListener(g_view, "dyf_give", OnJsGive);
+    g_prisma->RegisterJSListener(g_view, "dyf_return", OnJsReturn);
+    g_prisma->RegisterJSListener(g_view, "dyf_playerlist", OnJsPlayerList);
     g_prisma->RegisterJSListener(g_view, "dyf_close", OnJsClose);
     g_prisma->RegisterJSListener(g_view, "dyf_pick", OnJsPick);
     g_prisma->RegisterJSListener(g_view, "dyf_showpicker", OnJsShowPicker);
@@ -560,6 +734,8 @@ void Dresser::OnGameLoaded() {
 
 bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("GetPanelTarget", "DYF_Native", GetPanelTargetImpl);
+    a_vm->RegisterFunction("SetToggleKey", "DYF_Native", SetToggleKeyImpl);
+    a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
     logger::info("DYF_Native registered");
     return true;
 }

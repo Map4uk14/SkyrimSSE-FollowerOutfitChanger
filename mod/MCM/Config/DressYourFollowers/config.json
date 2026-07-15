@@ -20,12 +20,21 @@
             }
         },
         {
-            "id": "bNotify:General",
-            "type": "toggle",
-            "text": "Show status messages",
-            "help": "Corner notifications for actions (e.g. 'Equipped: Iron Cuirass').",
+            "id": "iOpenKey:General",
+            "type": "keymap",
+            "text": "Open wardrobe hotkey",
+            "help": "Key to open/close the wardrobe overlay while looking at a follower. Default F4; clear it to disable.",
             "valueOptions": {
-                "sourceType": "ModSettingBool"
+                "sourceType": "ModSettingInt"
+            }
+        },
+        {
+            "id": "iAccent:General",
+            "type": "color",
+            "text": "Overlay accent color",
+            "help": "Accent color for the wardrobe overlay - equipped items, highlights and the active tab. Takes effect next time the overlay opens.",
+            "valueOptions": {
+                "sourceType": "ModSettingInt"
             }
         },
         {
@@ -33,9 +42,30 @@
             "text": "Controls"
         },
         {
-            "position": 0,
-            "type": "info",
-            "text": "Look at a follower and press F4 to open the wardrobe overlay, then tick items to dress them. (Requires the PrismaUI framework.)"
+            "type": "text",
+            "text": "How to use",
+            "help": "Look at a follower and press the wardrobe hotkey (default F4) to open the overlay, then tick items to dress them. Requires the PrismaUI framework."
+        },
+        {
+            "type": "text",
+            "text": "Follower manager conflicts",
+            "help": "If you use NFF/EFF/AFT outfit management on a follower, turn it off for that follower before dressing them here, or the two systems will fight."
+        },
+        {
+            "type": "header",
+            "text": "Dressed followers"
+        },
+        {
+            "id": "iManagedList:Maintenance",
+            "type": "menu",
+            "text": "Dressed followers",
+            "help": "Followers this mod is currently keeping dressed. The row shows the current count; open the list to see who. Read-only.",
+            "valueOptions": {
+                "sourceType": "ModSettingInt",
+                "options": [
+                    "(open menu to refresh)"
+                ]
+            }
         },
         {
             "type": "header",
@@ -62,11 +92,6 @@
                 "scriptName": "DYF_Main",
                 "function": "ClearAllManaged"
             }
-        },
-        {
-            "position": 1,
-            "type": "info",
-            "text": "Follower managers: if you use NFF/EFF/AFT outfit management on a follower, turn it off for that follower before dressing them here, or the two systems will fight."
         }
     ]
 }
