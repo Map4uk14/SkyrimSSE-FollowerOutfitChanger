@@ -84,8 +84,9 @@ Function PushLoadout(Actor akFollower)
     endif
 EndFunction
 
-; Rebuild the whole mirror. The plugin's copy never persists in the save, so this
-; runs on every game load.
+; Re-push the whole mirror on load. The plugin restores it from its own co-save
+; before the engine dresses anyone, so this is a late confirmation and a safety net
+; (e.g. a save made before the co-save existed), not the primary path.
 Function SyncLoadouts()
     int n = StorageUtil.FormListCount(none, MANAGED_KEY)
     int i = 0

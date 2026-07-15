@@ -19,13 +19,10 @@ Function SetAccentColor(int aRgb) global native
 ; the VM, so it needs its own copy: it refuses any armor equip on a managed
 ; follower unless the piece is in this list. An EMPTY list is meaningful - the
 ; follower is managed and should wear nothing. Call this after every change to the
-; loadout, and for every managed follower on load (the plugin's copy is rebuilt
-; from scratch each launch, it never persists).
+; loadout. The plugin also keeps this mirror in its own co-save, so on load it is
+; already armed before the engine dresses anyone; our push on load just confirms it.
 Function SetLoadout(Actor akActor, Form[] akItems) global native
 
-; Stop managing this follower in the plugin: hands them back to vanilla auto-equip.
-; Note this is NOT the same as SetLoadout with an empty array (= wear nothing).
-Function ClearLoadout(Actor akActor) global native
-
-; Release everyone (used by the MCM's "Release all followers").
+; Release everyone: drops the plugin's whole mirror so those followers go back to
+; vanilla auto-equip. Used by the MCM's "Release all followers".
 Function ClearAllLoadouts() global native

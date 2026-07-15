@@ -44,16 +44,21 @@ namespace {
     //
     // Papyrus (StorageUtil) owns the durable loadout, but the hook below runs deep
     // inside the engine's equip path and cannot call into the VM. So Papyrus pushes
-    // a read-only copy down here via DYF_Native.SetLoadout / ClearLoadout, and the
-    // hook consults only this.
+    // a read-only copy down here via DYF_Native.SetLoadout, and the hook consults
+    // only this.
     //
     // Presence of an actor key means "managed by us". An entry with an empty set is
     // meaningful and must be kept: it is a follower we deliberately stripped, so
     // every armor equip on them should be refused.
     //
     // Written from the Papyrus VM thread, read from the game thread -> guarded.
-    // The plugin's copy is rebuilt from scratch on each game load (Papyrus calls
-    // SyncLoadouts from ResumeManagement), since it never persists in the save.
+    //
+    // LIFETIME: this rides in the SKSE co-save (OnSave/OnLoad below), so it is
+    // already populated when a save finishes loading. Papyrus re-pushes it from
+    // ResumeManagement as well, but only as a late confirmation - do NOT treat the
+    // Papyrus push as the source of truth and clear this on load, or the hook is
+    // disarmed for the seconds before Papyrus starts, which is precisely when the
+    // engine dresses everyone.
     std::shared_mutex g_loadoutLock;
     std::unordered_map<RE::FormID, std::unordered_set<RE::FormID>> g_loadouts;
 
@@ -137,7 +142,15 @@ namespace {
         std::uint32_t version = 0;
         std::uint32_t length = 0;
         while (a_intf->GetNextRecordInfo(type, version, length)) {
-            if (type != kSerLoadoutRecord || version != kSerVersion) {
+            if (type != kSerLoadoutRecord) {
+                continue;
+            }
+            if (version != kSerVersion) {
+                // Say so: silently dropping these looks identical in the log to a
+                // save that never had any, and the symptom (flicker on load until
+                // Papyrus re-pushes) would send someone hunting the hook instead.
+                logger::warn("Ignoring loadout record v{} (expected v{}); "
+                             "Papyrus will re-push shortly", version, kSerVersion);
                 continue;
             }
             std::uint32_t actorCount = 0;
@@ -244,12 +257,6 @@ namespace {
             SKSE::AllocTrampoline(14);
             REL::Relocation<std::uintptr_t> target{RELOCATION_ID(37938, 38894),
                                                    REL::Relocate(0xe5, 0x170)};
-            if (!target.address()) {
-                logger::error(
-                    "Anti-auto-equip hook NOT installed: address unresolved. "
-                    "Running poll-only (outfit flicker will return).");
-                return;
-            }
             EquipObjectHook::func =
                 SKSE::GetTrampoline().write_call<5>(target.address(), EquipObjectHook::thunk);
             logger::info("Installed anti-auto-equip hook at {:X}", target.address());
@@ -922,9 +929,15 @@ namespace {
 
     // Papyrus native: DYF_Native.SetLoadout(Actor, Form[]) - mirror one managed
     // follower's saved loadout down to the plugin so the anti-auto-equip hook can
-    // consult it. Papyrus calls this whenever the loadout changes and for every
-    // managed follower on load (the plugin's copy does not persist). An empty array
-    // is meaningful: the follower is managed and should wear nothing.
+    // consult it. Papyrus calls this whenever the loadout changes, and for every
+    // managed follower on load as a late confirmation of what the co-save already
+    // restored. An empty array is meaningful: managed, and should wear nothing.
+    //
+    // Known, accepted race: this replaces the whole set, so if you click two items
+    // fast, the VM-thread push for the first can briefly drop the second's optimistic
+    // MirrorAllow. It converges on the next push, the poll reads StorageUtil rather
+    // than this mirror, and the worst case is one refused equip - not worth sequence
+    // numbers to close.
     void SetLoadoutImpl(RE::StaticFunctionTag*, RE::Actor* a_actor,
                         std::vector<RE::TESForm*> a_items) {
         if (!a_actor) {
@@ -938,17 +951,6 @@ namespace {
         }
         std::unique_lock lock(g_loadoutLock);
         g_loadouts[a_actor->GetFormID()] = std::move(ids);
-    }
-
-    // Papyrus native: DYF_Native.ClearLoadout(Actor) - stop managing this follower.
-    // Removing the key (rather than emptying it) hands them back to vanilla, which
-    // is what "release" means.
-    void ClearLoadoutImpl(RE::StaticFunctionTag*, RE::Actor* a_actor) {
-        if (!a_actor) {
-            return;
-        }
-        std::unique_lock lock(g_loadoutLock);
-        g_loadouts.erase(a_actor->GetFormID());
     }
 
     // Papyrus native: DYF_Native.ClearAllLoadouts() - release everyone.
@@ -1084,7 +1086,6 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("SetToggleKey", "DYF_Native", SetToggleKeyImpl);
     a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
     a_vm->RegisterFunction("SetLoadout", "DYF_Native", SetLoadoutImpl);
-    a_vm->RegisterFunction("ClearLoadout", "DYF_Native", ClearLoadoutImpl);
     a_vm->RegisterFunction("ClearAllLoadouts", "DYF_Native", ClearAllLoadoutsImpl);
     logger::info("DYF_Native registered");
     return true;
