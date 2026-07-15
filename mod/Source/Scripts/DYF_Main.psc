@@ -65,9 +65,37 @@ EndFunction
 Function ResumeManagement()
     SyncSettings()
     if StorageUtil.FormListCount(none, MANAGED_KEY) > 0
+        ; Rebuild the plugin's loadout mirror BEFORE re-asserting: its hook refuses
+        ; the engine's auto-equip only for loadouts it knows about, and it starts
+        ; every launch empty.
+        SyncLoadouts()
         ReassertAllLoaded()
         RegisterForSingleUpdate(POLL_INTERVAL)
     endif
+EndFunction
+
+; Mirror one follower's loadout down to the SKSE plugin, whose anti-auto-equip hook
+; consults it (see DYF_Native.SetLoadout). Call after ANY change to the loadout -
+; if the mirror goes stale the hook stops refusing the engine's auto-equip and the
+; old "wears everything, then snaps back" flicker returns.
+Function PushLoadout(Actor akFollower)
+    if akFollower
+        DYF_Native.SetLoadout(akFollower, StorageUtil.FormListToArray(akFollower, LOADOUT_KEY))
+    endif
+EndFunction
+
+; Rebuild the whole mirror. The plugin's copy never persists in the save, so this
+; runs on every game load.
+Function SyncLoadouts()
+    int n = StorageUtil.FormListCount(none, MANAGED_KEY)
+    int i = 0
+    while i < n
+        Actor a = StorageUtil.FormListGet(none, MANAGED_KEY, i) as Actor
+        if a
+            PushLoadout(a)
+        endif
+        i += 1
+    endwhile
 EndFunction
 
 ; Push MCM-configured plugin settings (overlay hotkey + accent colour) down to the
@@ -168,6 +196,7 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
     ; read the worn state before the plugin's change registered, it re-equipped and
     ; caused a visible equip/unequip/equip flicker. Papyrus only keeps the books
     ; (loadout + management) here; the 3s poll below re-asserts as the safety net.
+    PushLoadout(follower)
     follower.QueueNiNodeUpdate()
 
     ; Repaint the overlay from real worn state and keep the poll alive.
@@ -196,6 +225,9 @@ Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender
     ; their default outfit, so the engine has nothing of its own to revert to.
     EnsureManaged(follower)
     StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    ; An empty loadout pushed down is what tells the hook to refuse EVERY armor
+    ; equip on them - that is what keeps them stripped with no flicker.
+    PushLoadout(follower)
     follower.QueueNiNodeUpdate()
     SendPanelRefresh()
     RegisterForSingleUpdate(POLL_INTERVAL)
@@ -249,6 +281,11 @@ Function EnsureManaged(Actor akFollower)
         StorageUtil.FormListAdd(akFollower, LOADOUT_KEY, keep[i])
         i += 1
     endwhile
+
+    ; Push the seeded loadout BEFORE the SetOutfit block below: from here on the
+    ; plugin's hook refuses engine auto-equips on this follower, and the pieces we
+    ; are about to re-equip are in the loadout, so they are allowed through.
+    PushLoadout(akFollower)
 
     if EmptyOutfit
         akFollower.SetOutfit(EmptyOutfit)
@@ -451,4 +488,8 @@ Function ClearAllManaged()
         i += 1
     endwhile
     StorageUtil.FormListClear(none, MANAGED_KEY)
+    ; Drop the plugin's mirror too, or its hook would keep refusing the engine's
+    ; auto-equip for followers we no longer manage - they'd stay frozen in whatever
+    ; they had on. Releasing means handing them back to vanilla.
+    DYF_Native.ClearAllLoadouts()
 EndFunction

@@ -7,6 +7,12 @@
 // the DYF_Native.GetPanelTarget() native this plugin registers.
 
 namespace Dresser {
+    // Installs the anti-auto-equip hook (call from SKSEPluginLoad, before the game
+    // runs). This is the plugin's only engine hook: it refuses the engine's
+    // auto-equip of armor that is not in a managed follower's saved loadout, which
+    // is what stops the "wears everything, then snaps back" flicker at source.
+    void InstallHooks();
+
     // Called once PrismaUI is available (SKSE kDataLoaded). Creates the view and
     // registers the input toggle + JS listeners. Safe no-op if PrismaUI missing.
     void Init();

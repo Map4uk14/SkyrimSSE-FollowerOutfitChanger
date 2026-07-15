@@ -7,7 +7,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -36,6 +39,108 @@ namespace {
 
     // Vanilla CurrentFollowerFaction [FACT:0005C84E].
     constexpr RE::FormID kFollowerFactionId = 0x0005C84E;
+
+    // --- Loadout mirror (feeds the anti-auto-equip hook) --------------------
+    //
+    // Papyrus (StorageUtil) owns the durable loadout, but the hook below runs deep
+    // inside the engine's equip path and cannot call into the VM. So Papyrus pushes
+    // a read-only copy down here via DYF_Native.SetLoadout / ClearLoadout, and the
+    // hook consults only this.
+    //
+    // Presence of an actor key means "managed by us". An entry with an empty set is
+    // meaningful and must be kept: it is a follower we deliberately stripped, so
+    // every armor equip on them should be refused.
+    //
+    // Written from the Papyrus VM thread, read from the game thread -> guarded.
+    // The plugin's copy is rebuilt from scratch on each game load (Papyrus calls
+    // SyncLoadouts from ResumeManagement), since it never persists in the save.
+    std::shared_mutex g_loadoutLock;
+    std::unordered_map<RE::FormID, std::unordered_set<RE::FormID>> g_loadouts;
+
+    // Should the engine be allowed to put this armor on this actor?
+    //
+    // Refuse only for a follower we manage, and only for armor that is not part of
+    // their saved loadout. Deliberately fail-open: unknown actor, unknown form, no
+    // loadout pushed yet, anything but armor -> vanilla behaviour. The worst case
+    // for a bug in here is the old flicker, never a follower who cannot be dressed.
+    bool EngineMayEquip(RE::Actor* a_actor, RE::TESBoundObject* a_object) {
+        if (!a_actor || !a_object || !a_object->IsArmor()) {
+            return true;
+        }
+        // Never interfere with the player - we only ever manage followers.
+        if (a_actor == RE::PlayerCharacter::GetSingleton()) {
+            return true;
+        }
+        std::shared_lock lock(g_loadoutLock);
+        auto it = g_loadouts.find(a_actor->GetFormID());
+        if (it == g_loadouts.end()) {
+            return true;  // not ours
+        }
+        return it->second.contains(a_object->GetFormID());
+    }
+
+    // THE anti-auto-equip hook, and the only hook in this plugin.
+    //
+    // Why it exists: the engine auto-equips an NPC's "best" owned gear whenever
+    // their inventory changes, so anything reactive (strip it back afterwards) can
+    // only ever shrink the wrong-outfit flash, never remove it - and reacting to
+    // TESEquipEvent instead produced an unbounded equip/unequip loop. This refuses
+    // the equip at source, so there is nothing to undo.
+    //
+    // It patches ONE call site to ActorEquipManager::EquipObject inside the engine's
+    // auto-equip routine - not EquipObject itself - so our own explicit equips (from
+    // the overlay fast path and from Papyrus EquipItemEx) do not pass through here.
+    // The loadout check is a second belt: even if some path did route through, a
+    // loadout piece is still allowed, so a managed follower can always be dressed.
+    //
+    // Address + offset are the ones the mature Skyrim Outfit Equipment System NG
+    // uses for the same interception; RELOCATION_ID keeps them valid across SE/AE
+    // via Address Library.
+    struct EquipObjectHook {
+        static void thunk(RE::ActorEquipManager* a_manager, RE::Actor* a_actor,
+                          RE::TESBoundObject* a_object, RE::ExtraDataList* a_list) {
+            if (!EngineMayEquip(a_actor, a_object)) {
+                return;  // swallow it: the engine never equips, so nothing flickers
+            }
+            func(a_manager, a_actor, a_object, a_list);
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    // Verified present in this install's Address Library: id 38894 -> 0x6C9820 on
+    // 1.6.1170.
+    //
+    // Be clear about the failure mode: if a future runtime has no entry for the id,
+    // CommonLibSSE's report_and_fail shows a message box and TERMINATES - it is
+    // [[noreturn]] and does not throw, so the catch below cannot rescue that. That
+    // is the intended, loud failure (the game refuses to start; nothing is
+    // corrupted, and removing the DLL or updating Address Library fixes it). The
+    // catch only covers failures we can genuinely degrade from, such as trampoline
+    // allocation, where running poll-only beats taking the game down.
+    void InstallEquipHook() {
+        try {
+            SKSE::AllocTrampoline(14);
+            REL::Relocation<std::uintptr_t> target{RELOCATION_ID(37938, 38894),
+                                                   REL::Relocate(0xe5, 0x170)};
+            if (!target.address()) {
+                logger::error(
+                    "Anti-auto-equip hook NOT installed: address unresolved. "
+                    "Running poll-only (outfit flicker will return).");
+                return;
+            }
+            EquipObjectHook::func =
+                SKSE::GetTrampoline().write_call<5>(target.address(), EquipObjectHook::thunk);
+            logger::info("Installed anti-auto-equip hook at {:X}", target.address());
+        } catch (const std::exception& e) {
+            logger::error(
+                "Anti-auto-equip hook NOT installed ({}). "
+                "Running poll-only (outfit flicker will return).", e.what());
+        } catch (...) {
+            logger::error(
+                "Anti-auto-equip hook NOT installed (unknown error). "
+                "Running poll-only (outfit flicker will return).");
+        }
+    }
 
     // --- helpers -----------------------------------------------------------
 
@@ -680,6 +785,43 @@ namespace {
         g_accentRgb.store(a_rgb);
     }
 
+    // Papyrus native: DYF_Native.SetLoadout(Actor, Form[]) - mirror one managed
+    // follower's saved loadout down to the plugin so the anti-auto-equip hook can
+    // consult it. Papyrus calls this whenever the loadout changes and for every
+    // managed follower on load (the plugin's copy does not persist). An empty array
+    // is meaningful: the follower is managed and should wear nothing.
+    void SetLoadoutImpl(RE::StaticFunctionTag*, RE::Actor* a_actor,
+                        std::vector<RE::TESForm*> a_items) {
+        if (!a_actor) {
+            return;
+        }
+        std::unordered_set<RE::FormID> ids;
+        for (auto* form : a_items) {
+            if (form) {
+                ids.insert(form->GetFormID());
+            }
+        }
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts[a_actor->GetFormID()] = std::move(ids);
+    }
+
+    // Papyrus native: DYF_Native.ClearLoadout(Actor) - stop managing this follower.
+    // Removing the key (rather than emptying it) hands them back to vanilla, which
+    // is what "release" means.
+    void ClearLoadoutImpl(RE::StaticFunctionTag*, RE::Actor* a_actor) {
+        if (!a_actor) {
+            return;
+        }
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts.erase(a_actor->GetFormID());
+    }
+
+    // Papyrus native: DYF_Native.ClearAllLoadouts() - release everyone.
+    void ClearAllLoadoutsImpl(RE::StaticFunctionTag*) {
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts.clear();
+    }
+
     class KeySink : public RE::BSTEventSink<RE::InputEvent*> {
     public:
         static KeySink* GetSingleton() {
@@ -773,7 +915,18 @@ void Dresser::Init() {
     logger::info("Dresser initialised (toggle key F4)");
 }
 
+void Dresser::InstallHooks() {
+    InstallEquipHook();
+}
+
 void Dresser::OnGameLoaded() {
+    // The mirrored loadouts belong to the save that is going away; a FormID from it
+    // could collide with a different actor in the one being loaded. Drop them and
+    // let Papyrus re-push (ResumeManagement -> SyncLoadouts) for the new save.
+    {
+        std::unique_lock lock(g_loadoutLock);
+        g_loadouts.clear();
+    }
     SKSE::GetTaskInterface()->AddTask([]() {
         g_targetId.store(0);
         if (g_prisma && g_view && g_open.load()) {
@@ -786,6 +939,9 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("GetPanelTarget", "DYF_Native", GetPanelTargetImpl);
     a_vm->RegisterFunction("SetToggleKey", "DYF_Native", SetToggleKeyImpl);
     a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
+    a_vm->RegisterFunction("SetLoadout", "DYF_Native", SetLoadoutImpl);
+    a_vm->RegisterFunction("ClearLoadout", "DYF_Native", ClearLoadoutImpl);
+    a_vm->RegisterFunction("ClearAllLoadouts", "DYF_Native", ClearAllLoadoutsImpl);
     logger::info("DYF_Native registered");
     return true;
 }
