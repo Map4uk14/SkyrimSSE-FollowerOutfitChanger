@@ -69,7 +69,7 @@
     color: #6b7280; border-radius: 5px; line-height: 20px;
   }
   .ret:hover { color: #ff9a9a; background: rgba(255,255,255,0.10); }
-  /* "Give & equip" affordance on Yours-tab rows. */
+  /* "Give" affordance on Yours-tab rows. */
   .add {
     width: 22px; flex: 0 0 auto; text-align: center; font-size: 18px;
     font-weight: 600; color: #6ee7a8; line-height: 20px;
@@ -232,14 +232,32 @@
   var panelMode = "picker";   // "picker" | "wardrobe"
   var activeTab = "follower"; // "follower" | "player"
 
+  // A scrollable pane loses its scrollTop while display:none (it has no layout to
+  // scroll), so hiding #list to show the picker - or to flip to the Yours tab -
+  // silently dumped it back at the top. Remember each pane's offset as it goes
+  // away and put it back when it returns. The picker is left out on purpose: it
+  // is rebuilt from scratch on every push, so a remembered offset would be stale.
+  var scrollMemo = {};
+  function showPane(sel, visible) {
+    var el = document.querySelector(sel);
+    if (visible) {
+      el.style.display = "";
+      el.scrollTop = scrollMemo[sel] || 0;
+    } else {
+      // Only read the offset while it is still real; reading it once hidden gives 0.
+      if (el.style.display !== "none") { scrollMemo[sel] = el.scrollTop; }
+      el.style.display = "none";
+    }
+  }
+
   function showPicker() {
     panelMode = "picker";
     document.querySelector("#picker").style.display    = "";
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
     document.querySelector("#actionbar").style.display = "none";
-    document.querySelector("#list").style.display      = "none";
-    document.querySelector("#plist").style.display     = "none";
+    showPane("#list", false);
+    showPane("#plist", false);
     document.querySelector("#details").style.display   = "none";
     document.querySelector("#change").style.display    = "none";
   }
@@ -256,8 +274,8 @@
 
   function applyTabView() {
     var f = activeTab === "follower";
-    document.querySelector("#list").style.display  = f ? "" : "none";
-    document.querySelector("#plist").style.display = f ? "none" : "";
+    showPane("#list", f);
+    showPane("#plist", !f);
     // "Unequip all" only makes sense against the follower's own gear.
     document.querySelector("#actionbar").style.display = f ? "" : "none";
     document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
@@ -590,7 +608,11 @@
     // First paint after the picker → enter the wardrobe on the Follower tab. A
     // later refresh (poll / after a toggle) must NOT pull the user off the Yours
     // tab, so only switch modes when we aren't already in the wardrobe.
-    if (panelMode !== "wardrobe") { activeTab = "follower"; enterWardrobe(); }
+    if (panelMode !== "wardrobe") {
+      activeTab = "follower";
+      scrollMemo["#list"] = 0; // a freshly picked follower starts at the top
+      enterWardrobe();
+    }
 
     // Fixed alphabetical order so a row never moves when its worn state changes.
     var items = (data.items || []).slice().sort(function (a, b) {
@@ -608,7 +630,10 @@
       return;
     }
 
-    // Item set changed (or first paint) -> rebuild the list.
+    // Item set changed (or first paint) -> rebuild the list. Replacing the rows
+    // resets scrollTop, so hold the offset and put it back: giving an item changes
+    // the set, and it shouldn't throw you back to the top of a long wardrobe.
+    var keepScroll = list.scrollTop;
     currentSig = sig;
     rowsById = {};
     list.innerHTML = "";
@@ -628,12 +653,15 @@
       list.appendChild(made.el);
     });
     applyFilter(); // keep any active filter after a rebuild
+    list.scrollTop = keepScroll;
   };
 
   // ---- Yours tab (give from the player's inventory) ------------------------
 
-  // A player-inventory row: click anywhere gives one copy to the follower and
-  // equips it. No checkbox/worn state - it's a one-shot action, like the picker.
+  // A player-inventory row: click anywhere hands one copy to the follower. It does
+  // not go on them - it lands in their inventory and shows up unticked in the
+  // Follower tab. No checkbox/worn state here - it's a one-shot action, like the
+  // picker.
   function makePlayerRow(item) {
     var row = document.createElement("div");
     row.className = "frow";
@@ -646,7 +674,7 @@
     var add = document.createElement("div");
     add.className = "add";
     add.innerHTML = "&#43;"; // +
-    add.title = "Give & equip on the follower";
+    add.title = "Give to the follower (tick it in Follower to put it on)";
 
     row.appendChild(icon);
     row.appendChild(label);

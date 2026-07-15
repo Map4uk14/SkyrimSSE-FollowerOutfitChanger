@@ -476,9 +476,15 @@ namespace {
         // applied the change, and RefreshSink repaints from the real worn state.
     }
 
-    // "Give" (Yours tab): move one copy of the player's item to the follower and
-    // equip it. argument = "0xFORMID". Same equip fast-path as OnJsToggle, plus the
-    // player->follower inventory move; Papyrus records it in the saved loadout.
+    // "Give" (Yours tab): move one copy of the player's item into the follower's
+    // inventory. argument = "0xFORMID".
+    //
+    // It is deliberately NOT equipped and NOT added to the saved loadout: handing
+    // gear over and deciding what they wear are separate steps, so you can pass a
+    // pile of items now and tick the ones you want later. Ticking it in the
+    // Follower tab is what puts it on and routes it into the loadout. For a managed
+    // follower the loadout is the source of truth, so if the engine auto-equips the
+    // new item the re-assert poll takes it straight back off.
     void OnJsGive(const char* a_arg) {
         if (!a_arg) {
             return;
@@ -490,13 +496,10 @@ namespace {
                 return;
             }
             RE::TESBoundObject* bound = nullptr;
-            const RE::BGSEquipSlot* slot = nullptr;
             if (auto armo = form->As<RE::TESObjectARMO>()) {
                 bound = armo;
-                slot = armo->GetEquipSlot();
             } else if (auto weap = form->As<RE::TESObjectWEAP>()) {
                 bound = weap;
-                slot = weap->GetEquipSlot();
             }
             if (!bound) {
                 return;
@@ -506,22 +509,8 @@ namespace {
             if (!actor || !player) {
                 return;
             }
-            // Move one from the player to the follower, then equip it (force=false
-            // so a same-slot piece is swapped out, matching OnJsToggle's equip).
             player->RemoveItem(bound, 1, RE::ITEM_REMOVE_REASON::kStoreInContainer, nullptr, actor);
-            if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
-                eqm->EquipObject(actor, bound, nullptr, 1, slot, false, false, false, true);
-            }
-            // Papyrus keeps the durable state: add the piece to the saved loadout.
-            if (auto source = SKSE::GetModCallbackEventSource()) {
-                SKSE::ModCallbackEvent ev{};
-                ev.eventName = "DYF_ToggleItem";
-                ev.strArg = "equip";
-                ev.numArg = 0.0f;
-                ev.sender = bound;
-                source->SendEvent(&ev);
-            }
-            PushListSoon();        // the piece now shows in the follower's tab
+            PushListSoon();        // the piece now shows in the follower's tab, unticked
             PushPlayerListSoon();  // and its count dropped in the Yours tab
         });
     }
