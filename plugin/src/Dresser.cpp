@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -169,11 +170,21 @@ namespace {
                     // moved would otherwise leave us holding a stranger's FormID.
                     if (a_intf->ResolveFormID(rawItem, item)) {
                         items.insert(item);
+                    } else {
+                        // Same reasoning as the actor case: a dropped piece means
+                        // the hook will refuse gear the follower should be wearing.
+                        logger::warn("Loadout mirror: item {:08X} did not resolve, dropped",
+                                     rawItem);
                     }
                 }
                 RE::FormID actor = 0;
                 if (a_intf->ResolveFormID(rawActor, actor)) {
                     g_loadouts[actor] = std::move(items);
+                } else {
+                    // Worth keeping loud: a follower silently missing from the
+                    // mirror is invisible in game until they refuse to stay dressed.
+                    logger::warn("Loadout mirror: actor {:08X} did not resolve, {} item(s) dropped",
+                                 rawActor, itemCount);
                 }
             }
         }
@@ -208,6 +219,79 @@ namespace {
         return it->second.contains(a_object->GetFormID());
     }
 
+    // --- Immediate re-dress ------------------------------------------------
+    //
+    // A managed follower arrives from a save load wearing NOTHING: EnsureManaged
+    // gave them an empty outfit (deliberately - it is what stops the engine using
+    // their default gear), so the game dresses them from that empty outfit. The
+    // engine then tries to fill the gap with their "best" owned armor, which we
+    // refuse. Nothing else puts their real outfit on until Papyrus's poll, which
+    // measured ~10s after the co-save had already told us exactly what they should
+    // wear. That gap IS the naked flash.
+    //
+    // So dress them here instead of waiting for Papyrus. A refusal is the perfect
+    // trigger: it only happens while the actor is loaded and being processed.
+    //
+    // This is not "fighting the engine frame-by-frame" (the known dead end, which
+    // was re-UNequipping in response to engine equips and oscillated forever): our
+    // equips are allowed and the engine's are refused, so the state converges. A
+    // second pass finds everything already worn and does nothing.
+    std::mutex g_pendingLock;
+    std::unordered_set<RE::FormID> g_pendingReassert;
+
+    void ReassertFromMirror(RE::FormID a_actorId) {
+        {
+            std::scoped_lock lock(g_pendingLock);
+            g_pendingReassert.erase(a_actorId);
+        }
+        auto actor = RE::TESForm::LookupByID<RE::Actor>(a_actorId);
+        if (!actor || actor->IsDead() || !actor->Is3DLoaded()) {
+            return;
+        }
+        std::vector<RE::FormID> want;
+        {
+            std::shared_lock lock(g_loadoutLock);
+            auto it = g_loadouts.find(a_actorId);
+            if (it == g_loadouts.end() || it->second.empty()) {
+                return;  // released, or deliberately stripped - nothing to put on
+            }
+            want.assign(it->second.begin(), it->second.end());
+        }
+        auto eqm = RE::ActorEquipManager::GetSingleton();
+        if (!eqm) {
+            return;
+        }
+        // One inventory snapshot for the whole pass; there is no per-item count API.
+        auto carried = actor->GetInventoryCounts([](RE::TESBoundObject& o) { return o.IsArmor(); });
+        for (auto id : want) {
+            auto* armo = RE::TESForm::LookupByID<RE::TESObjectARMO>(id);
+            if (!armo) {
+                continue;  // weapons stay Papyrus's job (hand-slot arbitration)
+            }
+            if (actor->GetWornArmor(armo->GetFormID())) {
+                continue;  // already on
+            }
+            auto found = carried.find(armo);
+            if (found == carried.end() || found->second <= 0) {
+                continue;  // they don't have it
+            }
+            // force=false to match the toggle's equip: same-slot pieces swap out.
+            eqm->EquipObject(actor, armo, nullptr, 1, armo->GetEquipSlot(), false, false, false, true);
+        }
+    }
+
+    // Debounced: a burst of refusals (19 on one load) queues exactly one pass.
+    void ScheduleReassert(RE::FormID a_actorId) {
+        {
+            std::scoped_lock lock(g_pendingLock);
+            if (!g_pendingReassert.insert(a_actorId).second) {
+                return;  // already queued
+            }
+        }
+        // Next frame, not here: this runs inside the engine's own equip call.
+        SKSE::GetTaskInterface()->AddTask([a_actorId]() { ReassertFromMirror(a_actorId); });
+    }
+
     // THE anti-auto-equip hook, and the only hook in this plugin.
     //
     // Why it exists: the engine auto-equips an NPC's "best" owned gear whenever
@@ -235,6 +319,10 @@ namespace {
         static void thunk(RE::ActorEquipManager* a_manager, RE::Actor* a_actor,
                           RE::TESBoundObject* a_object, RE::ExtraDataList* a_list) {
             if (!EngineMayEquip(a_actor, a_object)) {
+                // Refusing leaves a hole: on a load the follower is naked (empty
+                // outfit) and the engine's pick was their only candidate. Put their
+                // real outfit on next frame rather than waiting ~10s for Papyrus.
+                ScheduleReassert(a_actor->GetFormID());
                 return;  // swallow it: the engine never equips, so nothing flickers
             }
             func(a_manager, a_actor, a_object, a_list);
