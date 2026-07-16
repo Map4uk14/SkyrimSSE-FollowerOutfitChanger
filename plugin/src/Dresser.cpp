@@ -63,6 +63,12 @@ namespace {
     std::shared_mutex g_loadoutLock;
     std::unordered_map<RE::FormID, std::unordered_set<RE::FormID>> g_loadouts;
 
+    // Which outfit-preset slots hold a saved outfit, per follower (bit 0 = slot 1).
+    // UI-only data for the overlay's preset buttons: Papyrus owns the preset
+    // CONTENTS (StorageUtil) and re-pushes this mask on load and on every save, so
+    // it does not ride in the co-save. Guarded by g_loadoutLock like the mirror.
+    std::unordered_map<RE::FormID, std::int32_t> g_presetMasks;
+
     // Because the hook gates OUR equips too (see EquipObjectHook), anything we are
     // about to equip must already be in the mirror or we refuse ourselves. Papyrus
     // pushes the authoritative loadout a moment later; these only cover that gap and
@@ -254,6 +260,7 @@ namespace {
     void OnRevert(SKSE::SerializationInterface*) {
         std::unique_lock lock(g_loadoutLock);
         g_loadouts.clear();
+        g_presetMasks.clear();  // Papyrus re-pushes these after the load
     }
 
     // Should the engine be allowed to put this armor on this actor? Refuse only for
@@ -558,14 +565,22 @@ namespace {
 
     void PushFollowers();  // defined below
 
-    // Build the "{name, items[]}" wardrobe JSON for one actor's wearable inventory
-    // (armor + weapons). "worn" is computed against a_source, so it is meaningful
-    // for the follower's own list; the player-items ("Yours") tab ignores it. MUST
-    // run on the main thread (reads live inventory).
-    std::string BuildInventoryJson(RE::Actor* a_source, const char* a_label) {
+    // Build the "{name, presets?, items[]}" wardrobe JSON for one actor's wearable
+    // inventory (armor + weapons). "worn" is computed against a_source, so it is
+    // meaningful for the follower's own list; the player-items ("Yours") tab
+    // ignores it. a_presetMask >= 0 adds the occupied-preset-slots bitmask; the
+    // player list passes -1 (presets are follower-scoped). MUST run on the main
+    // thread (reads live inventory).
+    std::string BuildInventoryJson(RE::Actor* a_source, const char* a_label,
+                                   std::int32_t a_presetMask = -1) {
         std::string json = "{\"name\":\"";
         json += JsonEscape(a_label);
-        json += "\",\"items\":[";
+        json += '"';  // close the name string before optional fields
+        if (a_presetMask >= 0) {
+            json += ",\"presets\":";
+            json += std::to_string(a_presetMask);
+        }
+        json += ",\"items\":[";
         auto inventory = a_source->GetInventory([](RE::TESBoundObject& o) {
             if (o.IsArmor()) {
                 return true;
@@ -655,12 +670,21 @@ namespace {
             PushFollowers();
             return;
         }
+        // Occupied preset slots for this follower (0 if none pushed yet).
+        std::int32_t presetMask = 0;
+        {
+            std::shared_lock lock(g_loadoutLock);
+            auto it = g_presetMasks.find(actor->GetFormID());
+            if (it != g_presetMasks.end()) {
+                presetMask = it->second;
+            }
+        }
         // Call the JS receiver via Invoke (raw JS eval) rather than InteropCall
         // (InteropCall routes through a separate interop registry this view never
         // joins, so it silently no-ops). The JSON is base64-encoded so the JS
         // snippet is always parseable regardless of item/enchant name bytes.
         std::string call = "dyfRender(\"";
-        call += Base64Encode(BuildInventoryJson(actor, SafeActorName(actor)));
+        call += Base64Encode(BuildInventoryJson(actor, SafeActorName(actor), presetMask));
         call += "\")";
         g_prisma->Invoke(g_view, call.c_str());
     }
@@ -1037,6 +1061,30 @@ namespace {
         });
     }
 
+    // Outfit preset slot ("1".."3") from the overlay. No fast path here: Papyrus
+    // owns the preset contents (StorageUtil) and the apply IS a bulk re-dress -
+    // exactly what its ReassertOutfit already does - so both just forward the slot
+    // as a mod event and let the panel repaint via DYF_PanelRefresh as usual.
+    void SendPresetEvent(const char* a_event, const char* a_slot) {
+        if (!a_slot || a_slot[0] < '1' || a_slot[0] > '3' || a_slot[1] != '\0') {
+            return;
+        }
+        std::string name(a_event);
+        std::string slot(a_slot);
+        SKSE::GetTaskInterface()->AddTask([name, slot]() {
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = name.c_str();
+                ev.strArg = slot.c_str();
+                ev.numArg = 0.0f;
+                ev.sender = nullptr;
+                source->SendEvent(&ev);
+            }
+        });
+    }
+    void OnJsPresetSave(const char* a_arg) { SendPresetEvent("DYF_PresetSave", a_arg); }
+    void OnJsPresetApply(const char* a_arg) { SendPresetEvent("DYF_PresetApply", a_arg); }
+
     // Yours tab activated: (re)send the player's wearable inventory.
     void OnJsPlayerList(const char*) {
         SKSE::GetTaskInterface()->AddTask([]() { PushPlayerList(); });
@@ -1120,10 +1168,22 @@ namespace {
         g_loadouts[a_actor->GetFormID()] = std::move(ids);
     }
 
+    // Papyrus native: DYF_Native.SetPresets(Actor, int) - which preset slots hold
+    // a saved outfit (bit 0 = slot 1), for the overlay's preset buttons. Pushed on
+    // load and after every save; the contents themselves stay in StorageUtil.
+    void SetPresetsImpl(RE::StaticFunctionTag*, RE::Actor* a_actor, std::int32_t a_mask) {
+        if (!a_actor) {
+            return;
+        }
+        std::unique_lock lock(g_loadoutLock);
+        g_presetMasks[a_actor->GetFormID()] = a_mask;
+    }
+
     // Papyrus native: DYF_Native.ClearAllLoadouts() - release everyone.
     void ClearAllLoadoutsImpl(RE::StaticFunctionTag*) {
         std::unique_lock lock(g_loadoutLock);
         g_loadouts.clear();
+        g_presetMasks.clear();
     }
 
     class KeySink : public RE::BSTEventSink<RE::InputEvent*> {
@@ -1204,6 +1264,8 @@ void Dresser::Init() {
     g_prisma->RegisterJSListener(g_view, "dyf_give", OnJsGive);
     g_prisma->RegisterJSListener(g_view, "dyf_return", OnJsReturn);
     g_prisma->RegisterJSListener(g_view, "dyf_undressall", OnJsUndressAll);
+    g_prisma->RegisterJSListener(g_view, "dyf_presetsave", OnJsPresetSave);
+    g_prisma->RegisterJSListener(g_view, "dyf_presetapply", OnJsPresetApply);
     g_prisma->RegisterJSListener(g_view, "dyf_playerlist", OnJsPlayerList);
     g_prisma->RegisterJSListener(g_view, "dyf_close", OnJsClose);
     g_prisma->RegisterJSListener(g_view, "dyf_pick", OnJsPick);
@@ -1253,6 +1315,7 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("SetToggleKey", "DYF_Native", SetToggleKeyImpl);
     a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
     a_vm->RegisterFunction("SetLoadout", "DYF_Native", SetLoadoutImpl);
+    a_vm->RegisterFunction("SetPresets", "DYF_Native", SetPresetsImpl);
     a_vm->RegisterFunction("ClearAllLoadouts", "DYF_Native", ClearAllLoadoutsImpl);
     logger::info("DYF_Native registered");
     return true;

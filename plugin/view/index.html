@@ -53,6 +53,11 @@
     padding: 8px 10px; border-radius: 7px; cursor: pointer;
   }
   .row:hover, .frow:hover { background: rgba(255,255,255,0.06); }
+  /* Keyboard-selected row (inset ring: no layout change). */
+  .row.sel, .frow.sel {
+    background: rgba(255,255,255,0.08);
+    box-shadow: inset 0 0 0 1px rgba(110,231,168,0.55);
+  }
 
   /* Follower / Yours tab strip (wardrobe view only). */
   #tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
@@ -129,6 +134,20 @@
   .sbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
   .sbtn.active { color: #6ee7a8; border-color: rgba(110,231,168,0.55); }
 
+  /* Outfit preset slots (Follower tab). Filled slots are solid + accented; empty
+     ones dashed + dim. "Save" arms save mode (amber): the next slot click stores
+     the current outfit there. */
+  #presetbar { display: flex; gap: 4px; padding: 0 12px 4px; }
+  .pbtn {
+    flex: 1; text-align: center; padding: 5px 0; font-size: 11px;
+    color: #5d6470; border: 1px dashed rgba(255,255,255,0.12); border-radius: 7px;
+    cursor: pointer;
+  }
+  #presetSave { flex: 1.6; border-style: solid; color: #9aa0aa; }
+  .pbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
+  .pbtn.has { color: #6ee7a8; border-style: solid; border-color: rgba(110,231,168,0.35); }
+  .pbtn.arm { color: #ffd27d; border-style: solid; border-color: rgba(255,210,125,0.55); }
+
   /* Fixed height on purpose: #details is an in-flow flex child, so if it grew on
      hover the list above would reflow and rows would shift out from under the
      cursor (this made the last items of a long list unclickable). Sized to the
@@ -197,6 +216,12 @@
     <div class="sbtn" data-sort="worn" data-label="Worn" id="sortWorn">Worn</div>
     <div class="sbtn" data-sort="type" data-label="Type">Type</div>
     <div class="sbtn" data-sort="slot" data-label="Slot">Slot</div>
+  </div>
+  <div id="presetbar" style="display:none">
+    <div class="pbtn" data-slot="1">1</div>
+    <div class="pbtn" data-slot="2">2</div>
+    <div class="pbtn" data-slot="3">3</div>
+    <div class="pbtn" id="presetSave">Save</div>
   </div>
   <div id="actionbar" style="display:none"><div id="undressAll" class="abtn">Unequip all</div></div>
   <div id="picker"></div>
@@ -271,7 +296,8 @@
         ".again-accent{color:" + hex + ";}" +
         ".add{color:" + hex + ";}" +
         ".tab.active{color:" + hex + ";border-bottom-color:" + hex + ";}" +
-        ".sbtn.active{color:" + hex + ";border-color:" + hex + ";}";
+        ".sbtn.active{color:" + hex + ";border-color:" + hex + ";}" +
+        ".row.sel,.frow.sel{box-shadow:inset 0 0 0 1px " + hex + ";}";
       var el = document.getElementById("accentStyle");
       if (!el) {
         el = document.createElement("style");
@@ -313,6 +339,7 @@
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
     document.querySelector("#sortbar").style.display   = "none";
+    document.querySelector("#presetbar").style.display = "none";
     document.querySelector("#actionbar").style.display = "none";
     showPane("#list", false);
     showPane("#plist", false);
@@ -335,12 +362,14 @@
     var f = activeTab === "follower";
     showPane("#list", f);
     showPane("#plist", !f);
-    // "Unequip all" only makes sense against the follower's own gear, and so does
-    // sorting by worn - Yours-tab rows have no worn state. (The payload's `worn`
-    // for player items is the player's OWN equipped gear - never sort by it.)
+    // "Unequip all", presets and worn-sorting only make sense against the
+    // follower's own gear - Yours-tab rows have no worn state. (The payload's
+    // `worn` for player items is the player's OWN equipped gear - never sort by it.)
     document.querySelector("#actionbar").style.display = f ? "" : "none";
+    document.querySelector("#presetbar").style.display = f ? "" : "none";
     document.querySelector("#sortWorn").style.display  = f ? "" : "none";
     if (!f && sortMode === "worn") { setSortMode("name"); } // its button just vanished
+    if (presetArm) { presetArm = false; updatePresetBar(); } // don't save blind
     document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
     document.querySelector("#tabPlayer").className   = "tab" + (f ? "" : " active");
     document.querySelector("#filter").placeholder = f ? "Filter items…" : "Filter your items…";
@@ -393,6 +422,161 @@
       r.el.style.display = match ? "" : "none";
     });
   }
+
+  // ---- Outfit presets --------------------------------------------------------
+  //
+  // Three per-follower outfit slots (Follower tab only). Click a filled slot to
+  // apply it; click Save then a slot to store the current outfit there. The
+  // occupied-slots bitmask (bit 0 = slot 1) rides on every wardrobe push as
+  // data.presets; the contents live in Papyrus (StorageUtil).
+
+  var presetMask = 0;
+  var presetArm = false; // true = next slot click saves instead of applies
+  var presetSlotBtns = document.querySelectorAll("#presetbar .pbtn[data-slot]");
+  var presetSaveBtn = document.getElementById("presetSave");
+
+  function updatePresetBar() {
+    Array.prototype.forEach.call(presetSlotBtns, function (btn) {
+      var slot = parseInt(btn.getAttribute("data-slot"), 10);
+      var has = (presetMask & (1 << (slot - 1))) !== 0;
+      btn.className = "pbtn" + (has ? " has" : "") + (presetArm ? " arm" : "");
+      btn.title = presetArm ? ("Store the current outfit in slot " + slot)
+                : has ? ("Apply saved outfit " + slot)
+                : "Empty - click Save, then this slot, to store an outfit";
+    });
+    presetSaveBtn.className = "pbtn" + (presetArm ? " arm" : "");
+    presetSaveBtn.textContent = presetArm ? "Pick a slot…" : "Save";
+    presetSaveBtn.title = presetArm ? "Click again to cancel"
+                                    : "Save the current outfit into a slot";
+  }
+
+  function presetSlotClick(slot) {
+    var bit = 1 << (slot - 1);
+    if (presetArm) {
+      presetArm = false;
+      presetMask = presetMask | bit; // optimistic; the next push confirms
+      updatePresetBar();
+      try { window.dyf_presetsave(String(slot)); } catch (e) { dlog("presetsave ERR: " + e); }
+    } else if (presetMask & bit) {
+      try { window.dyf_presetapply(String(slot)); } catch (e) { dlog("presetapply ERR: " + e); }
+    }
+    // Empty slot, not saving: nothing to apply.
+  }
+
+  Array.prototype.forEach.call(presetSlotBtns, function (btn) {
+    btn.onclick = function () { presetSlotClick(parseInt(btn.getAttribute("data-slot"), 10)); };
+  });
+  presetSaveBtn.onclick = function () {
+    presetArm = !presetArm;
+    updatePresetBar();
+  };
+  updatePresetBar();
+
+  // ---- Keyboard navigation ---------------------------------------------------
+  //
+  //  W / Up      move selection up          E / Enter  activate (wear / give / pick)
+  //  S / Down    move selection down        Q          return selected to your inv
+  //  A / Left    Follower tab               R          remove all (= Unequip all)
+  //  D / Right   Yours tab                  F          focus filter; Esc leaves it
+  //
+  // keyCode (not e.key) - guaranteed in Ultralight's WebKit. The selection is the
+  // DOM itself: the one row with class .sel in the active pane, so rebuilds drop
+  // it naturally and tab flips keep each pane's own selection.
+
+  function activePane() {
+    if (panelMode === "picker") { return document.querySelector("#picker"); }
+    return activeTab === "player" ? elPlist : elList;
+  }
+  function visibleRows(pane) {
+    var out = [];
+    for (var i = 0; i < pane.children.length; i++) {
+      var k = pane.children[i];
+      if (k.id !== "empty" && k.style.display !== "none") { out.push(k); }
+    }
+    return out;
+  }
+  function selectedRow(pane) { return pane.querySelector(".sel"); }
+
+  // Scroll the pane just enough to show the row (rows and panes share #panel as
+  // offsetParent, so offsetTop math is direct).
+  function ensureRowVisible(pane, row) {
+    var y = row.offsetTop - pane.offsetTop;
+    if (y < pane.scrollTop) {
+      pane.scrollTop = y;
+    } else if (y + row.offsetHeight > pane.scrollTop + pane.clientHeight) {
+      pane.scrollTop = y + row.offsetHeight - pane.clientHeight;
+    }
+  }
+
+  function selectRow(pane, row) {
+    var cur = selectedRow(pane);
+    if (cur && cur !== row) { cur.className = cur.className.replace(" sel", ""); }
+    if (!row) { return; }
+    if (row.className.indexOf(" sel") === -1) { row.className += " sel"; }
+    ensureRowVisible(pane, row);
+    if (row._dyfItem) { setDetails(row._dyfItem); }
+  }
+
+  function moveSelection(dir) {
+    var pane = activePane();
+    var rows = visibleRows(pane);
+    if (!rows.length) { return; }
+    var idx = rows.indexOf(selectedRow(pane)); // -1 when none/hidden -> start at edge
+    idx = idx === -1 ? (dir > 0 ? 0 : rows.length - 1)
+                     : Math.max(0, Math.min(rows.length - 1, idx + dir));
+    selectRow(pane, rows[idx]);
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.target === elFilter) {
+      if (e.keyCode === 27) { elFilter.blur(); e.preventDefault(); } // Esc
+      return; // everything else is typing
+    }
+    var pane, sel;
+    switch (e.keyCode) {
+      case 87: case 38: moveSelection(-1); break;              // W / Up
+      case 83: case 40: moveSelection(1); break;               // S / Down
+      case 65: case 37:                                        // A / Left
+        if (panelMode === "wardrobe") { setTab("follower"); }
+        break;
+      case 68: case 39:                                        // D / Right
+        if (panelMode === "wardrobe") { setTab("player"); }
+        break;
+      case 69: case 13:                                        // E / Enter
+        sel = selectedRow(activePane());
+        if (sel && sel.onclick) { sel.onclick(); }
+        break;
+      case 81:                                                 // Q - return item
+        if (panelMode === "wardrobe" && activeTab === "follower") {
+          sel = selectedRow(elList);
+          if (sel && sel._dyfItem) {
+            try { window.dyf_return(sel._dyfItem.id); } catch (err) { dlog("dyf_return ERR: " + err); }
+          }
+        }
+        break;
+      case 82:                                                 // R - remove all
+        if (panelMode === "wardrobe" && activeTab === "follower") {
+          try { window.dyf_undressall(""); } catch (err) { dlog("dyf_undressall ERR: " + err); }
+        }
+        break;
+      case 70:                                                 // F - focus filter
+        elFilter.focus();
+        break;
+      case 49: case 50: case 51:                               // 1-3 - preset slots
+        if (panelMode === "wardrobe" && activeTab === "follower") {
+          presetSlotClick(e.keyCode - 48);
+        }
+        break;
+      case 27:                                                 // Esc - cancel Save
+        if (!presetArm) { return; }
+        presetArm = false;
+        updatePresetBar();
+        break;
+      default:
+        return; // unhandled: leave the event alone
+    }
+    e.preventDefault(); // handled: stop arrow-key page scroll, F typing, etc.
+  });
 
   // ---- Follower picker -----------------------------------------------------
 
@@ -719,7 +903,7 @@
   function detailsHint() {
     detailsItemId = null;
     elDetails.className = "hint";
-    elDetails.textContent = "Hover an item for details";
+    elDetails.textContent = "W/S browse · E wear · Q return · R strip all · A/D tabs · F filter";
   }
 
   function makeRow(item) {
@@ -748,6 +932,7 @@
     row.appendChild(icon);
     row.appendChild(ret);
 
+    row._dyfItem = item; // keyboard nav reads this to drive the details card
     row.onmouseenter = function () { setDetails(item); };
 
     var entry = {
@@ -758,7 +943,9 @@
       setWorn: function (on) {
         if (entry.worn === on) return;
         entry.worn = on;
-        row.className = "row" + (on ? " on" : "");
+        // Rebuild the class but keep the keyboard-selection marker if present.
+        var sel = row.className.indexOf(" sel") !== -1;
+        row.className = "row" + (on ? " on" : "") + (sel ? " sel" : "");
         box.innerHTML = on ? "&#10003;" : "";
       }
     };
@@ -803,6 +990,12 @@
       scrollMemo["#list"] = 0; // a freshly picked follower starts at the top
       enterWardrobe();
     }
+
+    // Preset slot states ride on every wardrobe push and can change while the
+    // item set stays identical (a save fills a slot), so paint them BEFORE the
+    // same-set early return below.
+    presetMask = data.presets || 0;
+    updatePresetBar();
 
     // Order-independent signature - changing the sort alone must not look like a
     // different item set and force a rebuild. Computed before sorting: the common
@@ -876,6 +1069,7 @@
     row.appendChild(label);
     row.appendChild(add);
 
+    row._dyfItem = item; // keyboard nav reads this to drive the details card
     row.onmouseenter = function () { setDetails(item); };
     row.onclick = function () {
       try { window.dyf_give(item.id); } catch (err) { dlog("dyf_give ERR: " + err); }
