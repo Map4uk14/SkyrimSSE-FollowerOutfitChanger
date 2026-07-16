@@ -23,6 +23,13 @@ Function SetAccentColor(int aRgb) global native
 ; already armed before the engine dresses anyone; our push on load just confirms it.
 Function SetLoadout(Actor akActor, Form[] akItems) global native
 
+; Make the follower's worn ARMOR match the mirror right now, on the game thread
+; (strip non-loadout armor, equip carried loadout armor). Called after a bulk
+; loadout change (preset apply / undo) so the outfit swaps instantly and the
+; panel repaint reads the finished state. Weapons stay with ReassertOutfit.
+; Requires PushLoadout FIRST - this syncs against the mirror.
+Function SyncWornArmor(Actor akActor) global native
+
 ; Tell the plugin which outfit-preset slots hold a saved outfit for this follower
 ; (bit 0 = slot 1), so the overlay can draw filled vs empty preset buttons. UI-only:
 ; the preset contents live in StorageUtil. Pushed on load and after every save.
