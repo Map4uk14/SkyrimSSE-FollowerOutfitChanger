@@ -100,26 +100,61 @@
     color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
   }
   .abtn:hover { color: #ff9a9a; border-color: rgba(255,154,154,0.45); background: rgba(255,255,255,0.06); }
+  #filterwrap { position: relative; }
   #filter {
     width: 100%; box-sizing: border-box;
     background: rgba(0,0,0,0.30); color: #e8e8ea;
     border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
-    padding: 7px 10px; font-size: 13px; outline: none;
+    padding: 7px 30px 7px 10px; font-size: 13px; outline: none;
   }
   #filter::placeholder { color: #7c8290; }
   #filter:focus { border-color: rgba(110,231,168,0.55); }
+  /* Clear-the-filter ✕ inside the input; shown only while there is text.
+     Fixed top offset instead of a transform - cheaper to trust in Ultralight. */
+  #filterclear {
+    position: absolute; right: 7px; top: 7px;
+    width: 18px; height: 18px; line-height: 18px; text-align: center;
+    font-size: 12px; color: #7c8290; border-radius: 4px; cursor: pointer;
+    display: none;
+  }
+  #filterclear:hover { color: #fff; background: rgba(255,255,255,0.10); }
 
+  /* Sort mode buttons under the filter. */
+  #sortbar { display: flex; gap: 4px; padding: 6px 12px 4px; }
+  .sbtn {
+    flex: 1; text-align: center; padding: 5px 0; font-size: 11px;
+    color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
+    cursor: pointer;
+  }
+  .sbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
+  .sbtn.active { color: #6ee7a8; border-color: rgba(110,231,168,0.55); }
+
+  /* Fixed height on purpose: #details is an in-flow flex child, so if it grew on
+     hover the list above would reflow and rows would shift out from under the
+     cursor (this made the last items of a long list unclickable). Sized to the
+     tallest card - head + chips + one enchant line - which only holds because
+     every text line below is ellipsized, never wrapped. */
   #details {
+    flex: 0 0 auto; height: 176px; overflow: hidden;
     border-top: 1px solid rgba(255,255,255,0.08);
     background: rgba(255,255,255,0.035);
     padding: 12px 14px 14px; font-size: 12px; color: #c4c8d0;
   }
-  #details.hint { color: #9aa0aa; font-style: italic; padding: 16px 14px; }
+  #details.hint {
+    color: #9aa0aa; font-style: italic;
+    display: flex; align-items: center;
+  }
   .d-head { display: flex; align-items: center; gap: 11px; margin-bottom: 11px; }
   .d-icon { width: 30px; height: 30px; flex: 0 0 auto; color: #dfe3ea; }
   .d-titles { min-width: 0; flex: 1; }
-  .d-name { font-size: 14px; font-weight: 600; color: #ffffff; }
-  .d-sub { font-size: 11px; color: #9aa0aa; margin-top: 2px; }
+  .d-name {
+    font-size: 14px; font-weight: 600; color: #ffffff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .d-sub {
+    font-size: 11px; color: #9aa0aa; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .d-chips { display: flex; gap: 8px; }
   .chip {
     flex: 1; background: rgba(255,255,255,0.05); border-radius: 8px;
@@ -130,6 +165,8 @@
   .d-ench {
     margin-top: 11px; padding: 8px 11px; border-radius: 8px;
     background: rgba(120,140,255,0.12); color: #bcc8ff; font-size: 12px;
+    /* One line, ellipsized - #details has a fixed height, so it must not wrap. */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 </style>
 </head>
@@ -149,7 +186,18 @@
     <div id="tabFollower" class="tab active">Follower</div>
     <div id="tabPlayer" class="tab">Yours</div>
   </div>
-  <div id="filterbar" style="display:none"><input id="filter" type="text" placeholder="Filter items…"></div>
+  <div id="filterbar" style="display:none">
+    <div id="filterwrap">
+      <input id="filter" type="text" placeholder="Filter items…">
+      <div id="filterclear" title="Clear filter">&#10005;</div>
+    </div>
+  </div>
+  <div id="sortbar" style="display:none">
+    <div class="sbtn active" data-sort="name" data-label="Name">Name</div>
+    <div class="sbtn" data-sort="worn" data-label="Worn" id="sortWorn">Worn</div>
+    <div class="sbtn" data-sort="type" data-label="Type">Type</div>
+    <div class="sbtn" data-sort="slot" data-label="Slot">Slot</div>
+  </div>
   <div id="actionbar" style="display:none"><div id="undressAll" class="abtn">Unequip all</div></div>
   <div id="picker"></div>
   <div id="list" style="display:none"></div>
@@ -164,9 +212,17 @@
   // The plugin decides which to show: F4 on a follower opens their wardrobe
   // directly; otherwise the picker. The "Change" button returns to the picker.
 
-  var rowsById = {};   // follower wardrobe: id -> { setWorn(bool), worn, slot }
-  var prowsById = {};  // player ("Yours") tab: id -> { name, el }
-  var currentSig = ""; // signature of the current follower item set (to detect changes)
+  var rowsById = {};    // follower wardrobe: id -> row entry (see makeRow)
+  var prowsById = {};   // player ("Yours") tab: id -> row entry (see makePlayerRow)
+  var currentSig = "";  // signature of the current follower item set (to detect changes)
+  var currentPSig = ""; // same, for the player list
+
+  // Hot-path element handles (the script runs after the DOM is parsed).
+  var elList        = document.querySelector("#list");
+  var elPlist       = document.querySelector("#plist");
+  var elDetails     = document.querySelector("#details");
+  var elFilter      = document.querySelector("#filter");
+  var elFilterClear = document.querySelector("#filterclear");
 
   // Diagnostic: send a line to the SKSE log via the dyf_log C++ listener.
   function dlog(msg) { try { if (window.dyf_log) window.dyf_log(String(msg)); } catch (e) {} }
@@ -214,7 +270,8 @@
         "#filter:focus{border-color:" + hex + ";}" +
         ".again-accent{color:" + hex + ";}" +
         ".add{color:" + hex + ";}" +
-        ".tab.active{color:" + hex + ";border-bottom-color:" + hex + ";}";
+        ".tab.active{color:" + hex + ";border-bottom-color:" + hex + ";}" +
+        ".sbtn.active{color:" + hex + ";border-color:" + hex + ";}";
       var el = document.getElementById("accentStyle");
       if (!el) {
         el = document.createElement("style");
@@ -255,6 +312,7 @@
     document.querySelector("#picker").style.display    = "";
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
+    document.querySelector("#sortbar").style.display   = "none";
     document.querySelector("#actionbar").style.display = "none";
     showPane("#list", false);
     showPane("#plist", false);
@@ -267,6 +325,7 @@
     document.querySelector("#picker").style.display    = "none";
     document.querySelector("#tabs").style.display      = "";
     document.querySelector("#filterbar").style.display = "";
+    document.querySelector("#sortbar").style.display   = "";
     document.querySelector("#details").style.display   = "";
     document.querySelector("#change").style.display    = "";
     applyTabView();
@@ -276,8 +335,12 @@
     var f = activeTab === "follower";
     showPane("#list", f);
     showPane("#plist", !f);
-    // "Unequip all" only makes sense against the follower's own gear.
+    // "Unequip all" only makes sense against the follower's own gear, and so does
+    // sorting by worn - Yours-tab rows have no worn state. (The payload's `worn`
+    // for player items is the player's OWN equipped gear - never sort by it.)
     document.querySelector("#actionbar").style.display = f ? "" : "none";
+    document.querySelector("#sortWorn").style.display  = f ? "" : "none";
+    if (!f && sortMode === "worn") { setSortMode("name"); } // its button just vanished
     document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
     document.querySelector("#tabPlayer").className   = "tab" + (f ? "" : " active");
     document.querySelector("#filter").placeholder = f ? "Filter items…" : "Filter your items…";
@@ -309,10 +372,19 @@
   // ---- Filter --------------------------------------------------------------
 
   var filterText = "";
-  document.querySelector("#filter").addEventListener("input", function (e) {
+  elFilter.addEventListener("input", function (e) {
     filterText = (e.target.value || "").toLowerCase();
+    elFilterClear.style.display = filterText ? "block" : "none";
     applyFilter();
   });
+  elFilterClear.onclick = function () {
+    elFilter.value = "";
+    filterText = "";
+    elFilterClear.style.display = "none";
+    applyFilter();
+    elFilter.focus();
+  };
+  // Shows/hides existing rows in place - no DOM rebuild per keystroke.
   function applyFilter() {
     var map = activeTab === "player" ? prowsById : rowsById;
     Object.keys(map).forEach(function (id) {
@@ -457,15 +529,128 @@
   // Ready-to-inject SVG markup for a row / the details header.
   function itemIcon(item) { return svgIcon(itemIconKey(item)); }
 
-  // Type + slot/kind subtitle. Clothing on a ring/amulet slot reads as Jewelry.
+  // Clothing whose primary slot is a ring/amulet reads as Jewelry - shared by the
+  // details subtitle and the Type sort so they can't disagree.
+  function isJewelry(item) {
+    if (item.atype !== 2) { return false; }
+    var s = slotName(item.slot);
+    return s === "Ring" || s === "Amulet";
+  }
+
+  // Type + slot/kind subtitle.
   function subtitle(item) {
     if (item.kind === 1) {
       return weaponName(item.wtype) + "   ·   Weapon";
     }
     var t = ["Light Armor", "Heavy Armor", "Clothing"][item.atype] || "";
+    if (isJewelry(item)) { t = "Jewelry"; }
     var s = slotName(item.slot);
-    if (item.atype === 2 && (s === "Ring" || s === "Amulet")) { t = "Jewelry"; }
     return t ? (t + "   ·   " + s) : s;
+  }
+
+  // ---- Sorting ---------------------------------------------------------------
+
+  //  "name"  alphabetical (default)
+  //  "worn"  worn first (Follower tab only), then name
+  //  "type"  Light / Heavy / Clothing / Jewelry, then weapons by type, then name
+  //  "slot"  grouped by the row icon (armor slot / weapon type), then name
+  // Clicking the active button again inverts the direction (A-Z -> Z-A and so on).
+  // The order is applied when a list is built and when a sort button is clicked -
+  // never on a worn toggle, so rows don't move under the cursor.
+  var sortMode = "name";
+  var sortDesc = false;
+
+  var ICON_RANK = (function () {
+    var order = ["helm", "crown", "body", "hands", "feet", "amulet", "ring",
+                 "shield", "cloak", "hair", "other",
+                 "fist", "sword", "dagger", "waraxe", "mace", "greatsword",
+                 "battleaxe", "bow", "staff", "crossbow"];
+    var m = {};
+    for (var i = 0; i < order.length; i++) { m[order[i]] = i; }
+    return m;
+  })();
+  function iconRank(item) {
+    var r = ICON_RANK[itemIconKey(item)];
+    return r === undefined ? 999 : r;
+  }
+
+  // Light 0, Heavy 1, Clothing 2, Jewelry 3, anything odd 4, weapons after armor
+  // in wtype order.
+  function typeRank(item) {
+    if (item.kind === 1) { return 100 + (item.wtype || 0); }
+    if (isJewelry(item)) { return 3; }
+    return (item.atype === 0 || item.atype === 1 || item.atype === 2) ? item.atype : 4;
+  }
+
+  // Compares { item, worn } pairs - live row entries already have that shape, and
+  // sortItems wraps payload items into it. Ends on name, then id, so ties can't
+  // let equal-named rows swap between two sorts (Array.sort stability is not
+  // guaranteed on older engines). sortDesc flips the whole result.
+  function itemCompare(a, b) {
+    var c = 0;
+    if (sortMode === "worn" && !a.worn !== !b.worn) { c = a.worn ? -1 : 1; }
+    else if (sortMode === "type") { c = typeRank(a.item) - typeRank(b.item); }
+    else if (sortMode === "slot") { c = iconRank(a.item) - iconRank(b.item); }
+    if (c === 0) {
+      c = a.item.name.localeCompare(b.item.name) ||
+          (a.item.id < b.item.id ? -1 : (a.item.id > b.item.id ? 1 : 0));
+    }
+    return sortDesc ? -c : c;
+  }
+
+  // ignoreWorn: the player list must never order by `worn` - there it means the
+  // player's own equipped gear, not anything about the follower.
+  function sortItems(items, ignoreWorn) {
+    return items
+      .map(function (it) { return { item: it, worn: !ignoreWorn && !!it.worn }; })
+      .sort(itemCompare)
+      .map(function (p) { return p.item; });
+  }
+
+  // Reorder an already-built pane in place - appendChild moves the nodes, so
+  // rows, listeners and filter visibility all survive. Entries compare directly:
+  // they carry { item, worn } (player entries have no worn, which reads as
+  // false - matching sortItems' ignoreWorn build order).
+  function resortPane(container, map) {
+    var ids = Object.keys(map);
+    if (!ids.length) { return; }
+    var entries = ids.map(function (id) { return map[id]; });
+    entries.sort(itemCompare);
+    var frag = document.createDocumentFragment();
+    entries.forEach(function (e) { frag.appendChild(e.el); });
+    container.appendChild(frag);
+  }
+
+  var sortBtns = document.querySelectorAll("#sortbar .sbtn");
+  Array.prototype.forEach.call(sortBtns, function (btn) {
+    btn.onclick = function () { setSortMode(btn.getAttribute("data-sort")); };
+  });
+  // The active button carries the direction arrow; the others show their plain label.
+  function updateSortButtons() {
+    Array.prototype.forEach.call(sortBtns, function (btn) {
+      var active = btn.getAttribute("data-sort") === sortMode;
+      btn.className = "sbtn" + (active ? " active" : "");
+      btn.textContent = btn.getAttribute("data-label") +
+                        (active ? (sortDesc ? " ↓" : " ↑") : "");
+    });
+  }
+  updateSortButtons();
+  function setSortMode(mode) {
+    if (sortMode === mode) {
+      sortDesc = !sortDesc; // second press inverts: A-Z -> Z-A and so on
+    } else {
+      sortMode = mode;
+      sortDesc = false;
+    }
+    updateSortButtons();
+    // Both lists, so flipping tabs later can't show a stale order. A new order
+    // makes the old scroll offsets meaningless - back to the top.
+    resortPane(elList, rowsById);
+    resortPane(elPlist, prowsById);
+    elList.scrollTop = 0;
+    elPlist.scrollTop = 0;
+    scrollMemo["#list"] = 0;
+    scrollMemo["#plist"] = 0;
   }
 
   function chip(value, label) {
@@ -483,9 +668,13 @@
   }
 
   // Fill the footer with the hovered item's stats. Built from DOM nodes (not
-  // innerHTML) so item names can't inject markup.
+  // innerHTML) so item names can't inject markup. Re-hovering the item already
+  // shown is a no-op - mouseenter fires a lot while scrolling a list.
+  var detailsItemId = null;
   function setDetails(item) {
-    var d = document.querySelector("#details");
+    if (item.id === detailsItemId) { return; }
+    detailsItemId = item.id;
+    var d = elDetails;
     d.className = "";
     d.innerHTML = "";
 
@@ -528,9 +717,9 @@
   }
 
   function detailsHint() {
-    var d = document.querySelector("#details");
-    d.className = "hint";
-    d.textContent = "Hover an item for details";
+    detailsItemId = null;
+    elDetails.className = "hint";
+    elDetails.textContent = "Hover an item for details";
   }
 
   function makeRow(item) {
@@ -563,8 +752,8 @@
 
     var entry = {
       worn: null,
-      slot: item.slot || 0,
-      name: (item.name || "").toLowerCase(),
+      name: (item.name || "").toLowerCase(), // filter cache
+      item: item,                            // for re-sorting in place
       el: row,
       setWorn: function (on) {
         if (entry.worn === on) return;
@@ -580,11 +769,12 @@
       entry.setWorn(nowOn);
       // Optimistic same-slot clear: two pieces can't share a biped slot, so when
       // this one goes on, visually take off any other item that overlaps its slot.
-      if (nowOn && entry.slot) {
+      // (Weapons have no slot field; undefined & mask is 0, so they never match.)
+      if (nowOn && item.slot) {
         Object.keys(rowsById).forEach(function (oid) {
           if (oid !== item.id) {
             var o = rowsById[oid];
-            if (o.worn && (o.slot & entry.slot) !== 0) { o.setWorn(false); }
+            if (o.worn && (o.item.slot & item.slot) !== 0) { o.setWorn(false); }
           }
         });
       }
@@ -614,21 +804,25 @@
       enterWardrobe();
     }
 
-    // Fixed alphabetical order so a row never moves when its worn state changes.
-    var items = (data.items || []).slice().sort(function (a, b) {
-      return a.name.localeCompare(b.name);
-    });
-    var sig = items.map(function (it) { return it.id; }).join(",");
-    var list = document.querySelector("#list");
+    // Order-independent signature - changing the sort alone must not look like a
+    // different item set and force a rebuild. Computed before sorting: the common
+    // refresh changes nothing and shouldn't pay for a sort it throws away.
+    var raw = data.items || [];
+    var sig = raw.map(function (it) { return it.id; }).sort().join(",");
+    var list = elList;
 
     // Same item set as last push -> just reconcile worn state in place.
     if (sig !== "" && sig === currentSig) {
-      items.forEach(function (it) {
+      raw.forEach(function (it) {
         var r = rowsById[it.id];
         if (r) { r.setWorn(!!it.worn); }
       });
       return;
     }
+
+    // Order is fixed when the list is built (current sort mode), so a row never
+    // moves when its worn state changes; only a sort button reorders.
+    var items = sortItems(raw);
 
     // Item set changed (or first paint) -> rebuild the list. Replacing the rows
     // resets scrollTop, so hold the offset and put it back: giving an item changes
@@ -647,11 +841,13 @@
       return;
     }
 
+    var frag = document.createDocumentFragment();
     items.forEach(function (it) {
       var made = makeRow(it);
       rowsById[it.id] = made.entry;
-      list.appendChild(made.el);
+      frag.appendChild(made.el);
     });
+    list.appendChild(frag);
     applyFilter(); // keep any active filter after a rebuild
     list.scrollTop = keepScroll;
   };
@@ -685,7 +881,11 @@
       try { window.dyf_give(item.id); } catch (err) { dlog("dyf_give ERR: " + err); }
     };
 
-    var entry = { name: (item.name || "").toLowerCase(), el: row };
+    var entry = {
+      name: (item.name || "").toLowerCase(), // filter cache
+      item: item,                            // for re-sorting in place
+      el: row
+    };
     return { el: row, entry: entry };
   }
 
@@ -698,27 +898,39 @@
   };
 
   function render_player(data) {
-    var items = (data.items || []).slice().sort(function (a, b) {
-      return a.name.localeCompare(b.name);
-    });
-    var plist = document.querySelector("#plist");
+    // The plugin re-pushes this list every time the Yours tab opens. Same item
+    // set as already shown -> keep the built rows (and the scroll position);
+    // there is no worn state here to reconcile.
+    var raw = data.items || [];
+    var sig = raw.map(function (it) { return it.id; }).sort().join(",");
+    if (sig !== "" && sig === currentPSig) { return; }
+    currentPSig = sig;
+
+    // Set changed (e.g. gave away the last copy of something) -> rebuild, holding
+    // the scroll offset like the wardrobe does.
+    var items = sortItems(raw, true /* ignoreWorn */);
+    var keepScroll = elPlist.scrollTop;
     prowsById = {};
-    plist.innerHTML = "";
+    elPlist.innerHTML = "";
+    detailsHint();
 
     if (!items.length) {
       var empty = document.createElement("div");
       empty.id = "empty";
       empty.textContent = "No wearable items in your inventory.";
-      plist.appendChild(empty);
+      elPlist.appendChild(empty);
       return;
     }
 
+    var frag = document.createDocumentFragment();
     items.forEach(function (it) {
       var made = makePlayerRow(it);
       prowsById[it.id] = made.entry;
-      plist.appendChild(made.el);
+      frag.appendChild(made.el);
     });
+    elPlist.appendChild(frag);
     applyFilter(); // keep any active filter after a rebuild
+    elPlist.scrollTop = keepScroll;
   }
 </script>
 </body>

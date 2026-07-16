@@ -103,6 +103,65 @@ namespace {
         }
     }
 
+    // Does this weapon claim both hands? Same engine enum the overlay draws icons
+    // from, and the same rule Papyrus applies to the durable loadout.
+    bool IsTwoHandedWeapon(RE::TESObjectWEAP* a_weap) {
+        switch (a_weap->GetWeaponType()) {
+            case RE::WEAPON_TYPE::kTwoHandSword:
+            case RE::WEAPON_TYPE::kTwoHandAxe:
+            case RE::WEAPON_TYPE::kBow:
+            case RE::WEAPON_TYPE::kCrossbow:
+                return true;
+            default:
+                return false;  // sword/dagger/axe/mace/staff take one hand
+        }
+    }
+
+    // Take off the weapons the newcomer cannot share hands with: a two-hander/bow
+    // claims both, a one-hander leaves room for one companion. Papyrus does the same
+    // arithmetic for the durable loadout.
+    //
+    // Best-effort by necessity - the hook does not gate weapons (see EngineMayEquip),
+    // so the engine may pick one back up.
+    void EvictConflictingWeapons(RE::Actor* a_actor, RE::TESObjectWEAP* a_new) {
+        if (!a_actor || !a_new) {
+            return;
+        }
+        const bool newTwoHanded = IsTwoHandedWeapon(a_new);
+        std::vector<RE::TESObjectWEAP*> victims;
+        {
+            std::shared_lock lock(g_loadoutLock);
+            auto it = g_loadouts.find(a_actor->GetFormID());
+            if (it == g_loadouts.end()) {
+                return;  // not ours - leave the hands to the engine
+            }
+            int handsUsed = 1;  // the newcomer takes one
+            for (auto id : it->second) {
+                if (id == a_new->GetFormID()) {
+                    continue;
+                }
+                auto* w = RE::TESForm::LookupByID<RE::TESObjectWEAP>(id);
+                if (!w) {
+                    continue;  // armor: biped slots are arbitrated elsewhere
+                }
+                if (newTwoHanded || IsTwoHandedWeapon(w)) {
+                    victims.push_back(w);
+                } else if (handsUsed < 2) {
+                    handsUsed += 1;
+                } else {
+                    victims.push_back(w);
+                }
+            }
+        }
+        auto eqm = RE::ActorEquipManager::GetSingleton();
+        for (auto* w : victims) {
+            if (eqm) {
+                eqm->UnequipObject(a_actor, w, nullptr, 1, w->GetEquipSlot(), false, true, false,
+                                   true, nullptr);
+            }
+        }
+    }
+
     // --- Co-save persistence for the mirror --------------------------------
     //
     // Papyrus re-pushes the mirror on load (ResumeManagement -> SyncLoadouts), but
@@ -197,19 +256,23 @@ namespace {
         g_loadouts.clear();
     }
 
-    // Should the engine be allowed to put this armor on this actor?
+    // Should the engine be allowed to put this armor on this actor? Refuse only for
+    // a follower we manage, and only for armor outside their saved loadout.
     //
-    // Refuse only for a follower we manage, and only for armor that is not part of
-    // their saved loadout. Deliberately fail-open: unknown actor, unknown form, no
-    // loadout pushed yet, anything but armor -> vanilla behaviour. The worst case
-    // for a bug in here is the old flicker, never a follower who cannot be dressed.
+    // ARMOR ONLY - do NOT extend to weapons. Refusing a weapon here freezes the game
+    // on load: the engine's arm-the-NPC routine will not accept no and keeps asking.
+    // Proven three ways (see HANDOFF.md); the mature Outfit System NG gates
+    // IsArmor() only for the same reason. Cost: the engine still auto-equips a
+    // follower's best weapon, and that stays.
+    //
+    // Fails open - unknown actor/form, not ours, nothing pushed yet -> vanilla. The
+    // worst case for a bug here is the old flicker, never an undressable follower.
     bool EngineMayEquip(RE::Actor* a_actor, RE::TESBoundObject* a_object) {
         if (!a_actor || !a_object || !a_object->IsArmor()) {
             return true;
         }
-        // Never interfere with the player - we only ever manage followers.
         if (a_actor == RE::PlayerCharacter::GetSingleton()) {
-            return true;
+            return true;  // we only ever manage followers
         }
         std::shared_lock lock(g_loadoutLock);
         auto it = g_loadouts.find(a_actor->GetFormID());
@@ -298,7 +361,9 @@ namespace {
     // their inventory changes, so anything reactive (strip it back afterwards) can
     // only ever shrink the wrong-outfit flash, never remove it - and reacting to
     // TESEquipEvent instead produced an unbounded equip/unequip loop. This refuses
-    // the equip at source, so there is nothing to undo.
+    // the equip at source, so there is nothing to undo. It covers armor AND weapons
+    // (handing over a better sword otherwise made them draw it on the spot), with
+    // the hands left alone until the loadout names a weapon - see EngineMayEquip.
     //
     // IMPORTANT, learned the hard way: RELOCATION_ID(37938, 38894) IS
     // ActorEquipManager::EquipObject (see Offset::ActorEquipManager::EquipObject in
@@ -322,6 +387,7 @@ namespace {
                 // Refusing leaves a hole: on a load the follower is naked (empty
                 // outfit) and the engine's pick was their only candidate. Put their
                 // real outfit on next frame rather than waiting ~10s for Papyrus.
+                //
                 ScheduleReassert(a_actor->GetFormID());
                 return;  // swallow it: the engine never equips, so nothing flickers
             }
@@ -709,6 +775,13 @@ namespace {
         g_open.store(true);
         PushAccent();  // apply the user's accent before the list paints
 
+        // Refresh the Yours tab on every open. The view is a page that outlives the
+        // panel, so it keeps whatever it was last sent: reopening while Yours was
+        // the active tab showed an inventory from before anything was picked up.
+        // The tab only re-requests on a SWITCH, and switching to the tab you are
+        // already on is not a switch.
+        PushPlayerListSoon();
+
         // If the crosshair is already on a follower, dress them straight away;
         // otherwise show the nearby-follower picker so the user can choose.
         auto actor = GetCrosshairActor();
@@ -770,6 +843,12 @@ namespace {
             if (actor) {
                 if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
                     if (equip) {
+                        // Clear the hands before filling them: a weapon the newcomer
+                        // cannot share with has to be denied and taken off first, or
+                        // the engine re-equips it out of the still-permissive mirror.
+                        if (auto weap = bound->As<RE::TESObjectWEAP>()) {
+                            EvictConflictingWeapons(actor, weap);
+                        }
                         // Authorise it in the mirror FIRST: our own EquipObject call
                         // runs through the anti-auto-equip hook, which would refuse a
                         // piece that is not in the loadout yet (Papyrus only adds it
