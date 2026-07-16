@@ -171,9 +171,9 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
     if strArg == "unequip"
         StorageUtil.FormListRemove(follower, LOADOUT_KEY, piece, true)
     else
-        ; Adding an armor piece: drop any loadout piece that fights for the same
-        ; biped slot so the new one wins cleanly. Weapons have no biped slot, so
-        ; they skip this (the engine handles hand slots itself).
+        ; Adding a piece: drop any loadout piece that fights it for the same slot,
+        ; so the new one wins cleanly and the loadout only ever describes a look the
+        ; follower can actually wear.
         if armPiece
             int pieceMask = armPiece.GetSlotMask()
             Form[] load = StorageUtil.FormListToArray(follower, LOADOUT_KEY)
@@ -185,6 +185,8 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
                 endif
                 i += 1
             endwhile
+        else
+            PurgeConflictingWeapons(follower, sender as Weapon)
         endif
         if !StorageUtil.FormListHas(follower, LOADOUT_KEY, piece)
             StorageUtil.FormListAdd(follower, LOADOUT_KEY, piece)
@@ -233,6 +235,57 @@ Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender
     SendPanelRefresh()
     RegisterForSingleUpdate(POLL_INTERVAL)
 EndEvent
+
+; Does this weapon claim both hands? Weapon types are the engine's own enum, the
+; same one the overlay draws its icons from: 5 greatsword, 6 battleaxe, 7 bow,
+; 9 crossbow. Everything else (sword/dagger/axe/mace/staff) takes a single hand,
+; and staves dual-wield like any other one-hander.
+bool Function IsTwoHanded(Weapon akWeapon)
+    int t = akWeapon.GetWeaponType()
+    return t == 5 || t == 6 || t == 7 || t == 9
+EndFunction
+
+; Keep the loadout to a set of weapons the engine can actually hold at once: a
+; two-hander/bow/crossbow claims both hands and evicts everything else, a one-hander
+; evicts any two-hander and keeps at most one companion. Without this, ticking two
+; swords then a greatsword left all three in the loadout, describing a look no actor
+; can wear.
+;
+; Evicted pieces stay in the follower's inventory - this only unticks them.
+Function PurgeConflictingWeapons(Actor akFollower, Weapon akNew)
+    if akNew == none
+        return
+    endif
+    bool newTwoHanded = IsTwoHanded(akNew)
+    Form[] victims = Utility.CreateFormArray(34)
+    int victimCount = 0
+    int handsUsed = 1   ; the newcomer takes one
+
+    Form[] load = StorageUtil.FormListToArray(akFollower, LOADOUT_KEY)
+    int i = 0
+    while i < load.Length
+        Weapon other = load[i] as Weapon
+        if other && other != akNew
+            bool evict = true
+            if !newTwoHanded && !IsTwoHanded(other) && handsUsed < 2
+                handsUsed += 1      ; a one-hander can share with a one-hander
+                evict = false
+            endif
+            if evict && victimCount < 34
+                victims[victimCount] = other
+                victimCount += 1
+                StorageUtil.FormListRemove(akFollower, LOADOUT_KEY, other, true)
+            endif
+        endif
+        i += 1
+    endwhile
+
+    i = 0
+    while i < victimCount
+        akFollower.UnequipItem(victims[i], false, true)
+        i += 1
+    endwhile
+EndFunction
 
 ; Register a follower for management the first time the panel touches them,
 ; preserving their current look. The current worn set becomes their initial
