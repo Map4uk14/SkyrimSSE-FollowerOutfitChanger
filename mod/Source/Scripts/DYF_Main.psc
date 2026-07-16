@@ -60,6 +60,7 @@ Function RegisterModEvents()
     RegisterForModEvent("DYF_UndressAll", "OnDYFUndressAll")
     RegisterForModEvent("DYF_PresetSave", "OnDYFPresetSave")
     RegisterForModEvent("DYF_PresetApply", "OnDYFPresetApply")
+    RegisterForModEvent("DYF_Undo", "OnDYFUndo")
 EndFunction
 
 ; Called by DYF_PlayerAlias on load. Re-assert every managed follower's outfit
@@ -230,6 +231,12 @@ Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender
     ; loadout from the worn set - which the plugin has just emptied - and neutralises
     ; their default outfit, so the engine has nothing of its own to revert to.
     EnsureManaged(follower)
+    ; Snapshot the outfit being destroyed so the Undo button can bring it back
+    ; (one accidental "Unequip all" otherwise costs re-ticking everything).
+    if StorageUtil.FormListCount(follower, LOADOUT_KEY) > 0
+        CopyStoredList(follower, LOADOUT_KEY, PresetKey("Undo"))
+        PushPresets(follower)
+    endif
     StorageUtil.FormListClear(follower, LOADOUT_KEY)
     ; An empty loadout pushed down is what tells the hook to refuse EVERY armor
     ; equip on them - that is what keeps them stripped with no flicker.
@@ -243,10 +250,22 @@ EndEvent
 ; Outfit presets (three per-follower slots)
 ; -------------------------------------------------------------------
 
-; Per-follower StorageUtil key of one preset slot ("1".."3"). Each preset is a
-; FormList shaped exactly like LOADOUT_KEY - a saved outfit is just a saved loadout.
+; Per-follower StorageUtil key of one preset slot ("1".."3", or "Undo" for the
+; hidden snapshot the Undo button restores). Each preset is a FormList shaped
+; exactly like LOADOUT_KEY - a saved outfit is just a saved loadout.
 string Function PresetKey(string slot)
     return "DYF_Preset" + slot
+EndFunction
+
+; Copy one stored list over another (destination is replaced).
+Function CopyStoredList(Actor akFollower, string fromKey, string toKey)
+    StorageUtil.FormListClear(akFollower, toKey)
+    Form[] src = StorageUtil.FormListToArray(akFollower, fromKey)
+    int i = 0
+    while i < src.Length
+        StorageUtil.FormListAdd(akFollower, toKey, src[i])
+        i += 1
+    endwhile
 EndFunction
 
 ; Tell the plugin which slots are occupied (bit 0 = slot 1) so the overlay can
@@ -261,6 +280,9 @@ Function PushPresets(Actor akFollower)
     endif
     if StorageUtil.FormListCount(akFollower, PresetKey("3")) > 0
         mask += 4
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey("Undo")) > 0
+        mask += 8 ; bit 3 = the Undo button has a snapshot to restore
     endif
     DYF_Native.SetPresets(akFollower, mask)
 EndFunction
@@ -278,14 +300,7 @@ Event OnDYFPresetSave(string eventName, string strArg, float numArg, Form sender
         return
     endif
     EnsureManaged(follower)
-    string pkey = PresetKey(strArg)
-    StorageUtil.FormListClear(follower, pkey)
-    Form[] load = StorageUtil.FormListToArray(follower, LOADOUT_KEY)
-    int i = 0
-    while i < load.Length
-        StorageUtil.FormListAdd(follower, pkey, load[i])
-        i += 1
-    endwhile
+    CopyStoredList(follower, LOADOUT_KEY, PresetKey(strArg))
     PushPresets(follower)
     SendPanelRefresh()
 EndEvent
@@ -308,20 +323,66 @@ Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sende
         return ; empty slot - the overlay greys these out, but never trust the UI
     endif
     EnsureManaged(follower)
-    StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    ; The outgoing outfit becomes the Undo snapshot, then the preset becomes the
+    ; loadout. Read the preset into an array before touching anything so the two
+    ; copies can't interact.
     Form[] outfitItems = StorageUtil.FormListToArray(follower, pkey)
+    CopyStoredList(follower, LOADOUT_KEY, PresetKey("Undo"))
+    StorageUtil.FormListClear(follower, LOADOUT_KEY)
     int i = 0
     while i < outfitItems.Length
         StorageUtil.FormListAdd(follower, LOADOUT_KEY, outfitItems[i])
         i += 1
     endwhile
     ; Arm the mirror BEFORE touching worn state - our own equips run through the
-    ; anti-auto-equip hook and would be refused with a stale mirror.
+    ; anti-auto-equip hook and would be refused with a stale mirror. Then swap the
+    ; armor instantly on the game thread (SyncWornArmor) so the repaint below reads
+    ; the finished outfit - ReassertOutfit alone lands too late and the panel
+    ; showed a half-applied state. ReassertOutfit still runs for the weapons.
     PushLoadout(follower)
+    DYF_Native.SyncWornArmor(follower)
     ReassertOutfit(follower)
     follower.QueueNiNodeUpdate()
+    PushPresets(follower) ; the Undo slot just filled (or changed)
     SendPanelRefresh()
-    RegisterForSingleUpdate(POLL_INTERVAL)
+    ; Weapon equips settle a beat later than the armor sync - run a short fast
+    ; burst so the checkboxes self-correct within half a second, not 3s.
+    fastTicksRemaining = 2
+    RegisterForSingleUpdate(FAST_INTERVAL)
+EndEvent
+
+; Overlay "Undo": restore the outfit snapshotted before the last destructive
+; action ("Unequip all" or a preset apply). Implemented as an apply of the hidden
+; "Undo" pseudo-slot, which swaps snapshot and current outfit - so Undo twice
+; toggles between the two.
+Event OnDYFUndo(string eventName, string strArg, float numArg, Form sender)
+    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    if StorageUtil.FormListCount(follower, PresetKey("Undo")) <= 0
+        return ; nothing snapshotted yet
+    endif
+    EnsureManaged(follower)
+    Form[] snap = StorageUtil.FormListToArray(follower, PresetKey("Undo"))
+    CopyStoredList(follower, LOADOUT_KEY, PresetKey("Undo"))
+    StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    int i = 0
+    while i < snap.Length
+        StorageUtil.FormListAdd(follower, LOADOUT_KEY, snap[i])
+        i += 1
+    endwhile
+    PushLoadout(follower)
+    DYF_Native.SyncWornArmor(follower) ; instant armor swap - see OnDYFPresetApply
+    ReassertOutfit(follower)
+    follower.QueueNiNodeUpdate()
+    PushPresets(follower)
+    SendPanelRefresh()
+    fastTicksRemaining = 2
+    RegisterForSingleUpdate(FAST_INTERVAL)
 EndEvent
 
 ; Does this weapon claim both hands? Weapon types are the engine's own enum, the
@@ -629,6 +690,7 @@ Function ClearAllManaged()
             StorageUtil.FormListClear(a, PresetKey("1"))
             StorageUtil.FormListClear(a, PresetKey("2"))
             StorageUtil.FormListClear(a, PresetKey("3"))
+            StorageUtil.FormListClear(a, PresetKey("Undo"))
         endif
         i += 1
     endwhile

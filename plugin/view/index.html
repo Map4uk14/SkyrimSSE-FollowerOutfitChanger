@@ -97,14 +97,15 @@
   .again-accent { color: #6ee7a8; }
 
   #filterbar { padding: 8px 12px 4px; }
-  /* Bulk "unequip all" action, under the filter (Follower tab only). Tinted red
-     on hover like .ret, since it takes gear off. */
+  /* Bulk strip/restore toggle under the filter (Follower tab only). Red on hover
+     while it strips; accent (.re) while a second press would restore the outfit. */
   #actionbar { padding: 0 12px 4px; }
   .abtn {
     cursor: pointer; text-align: center; padding: 6px 0; font-size: 12px;
     color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
   }
   .abtn:hover { color: #ff9a9a; border-color: rgba(255,154,154,0.45); background: rgba(255,255,255,0.06); }
+  .abtn.re:hover { color: #6ee7a8; border-color: rgba(110,231,168,0.45); }
   #filterwrap { position: relative; }
   #filter {
     width: 100%; box-sizing: border-box;
@@ -297,7 +298,8 @@
         ".add{color:" + hex + ";}" +
         ".tab.active{color:" + hex + ";border-bottom-color:" + hex + ";}" +
         ".sbtn.active{color:" + hex + ";border-color:" + hex + ";}" +
-        ".row.sel,.frow.sel{box-shadow:inset 0 0 0 1px " + hex + ";}";
+        ".row.sel,.frow.sel{box-shadow:inset 0 0 0 1px " + hex + ";}" +
+        ".abtn.re:hover{color:" + hex + ";border-color:" + hex + ";}";
       var el = document.getElementById("accentStyle");
       if (!el) {
         el = document.createElement("style");
@@ -397,6 +399,18 @@
   document.querySelector("#undressAll").onclick = function () {
     try { window.dyf_undressall(""); } catch (e) { dlog("dyf_undressall ERR: " + e); }
   };
+
+  // The strip button is a toggle (the plugin decides which way): stripped with a
+  // snapshot waiting means the next press RESTORES. Label it honestly. Driven by
+  // the live worn states + bit 3 of the presets mask, on every wardrobe paint.
+  function updateUndressLabel() {
+    var anyWorn = false;
+    Object.keys(rowsById).forEach(function (id) { if (rowsById[id].worn) { anyWorn = true; } });
+    var restore = !anyWorn && (presetMask & 8) !== 0;
+    var btn = document.querySelector("#undressAll");
+    btn.textContent = restore ? "Re-equip outfit" : "Unequip all";
+    btn.className = "abtn" + (restore ? " re" : "");
+  }
 
   // ---- Filter --------------------------------------------------------------
 
@@ -903,7 +917,7 @@
   function detailsHint() {
     detailsItemId = null;
     elDetails.className = "hint";
-    elDetails.textContent = "W/S browse · E wear · Q return · R strip all · A/D tabs · F filter";
+    elDetails.textContent = "W/S browse · E wear · Q return · R strip/restore · A/D tabs · F filter";
   }
 
   function makeRow(item) {
@@ -1010,6 +1024,7 @@
         var r = rowsById[it.id];
         if (r) { r.setWorn(!!it.worn); }
       });
+      updateUndressLabel();
       return;
     }
 
@@ -1031,6 +1046,7 @@
       empty.id = "empty";
       empty.textContent = "No wearable items.";
       list.appendChild(empty);
+      updateUndressLabel();
       return;
     }
 
@@ -1043,6 +1059,7 @@
     list.appendChild(frag);
     applyFilter(); // keep any active filter after a rebuild
     list.scrollTop = keepScroll;
+    updateUndressLabel();
   };
 
   // ---- Yours tab (give from the player's inventory) ------------------------

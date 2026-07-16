@@ -1008,6 +1008,31 @@ namespace {
             if (!actor) {
                 return;
             }
+            // R toggles: strip, press again to put the outfit back, again to strip.
+            // "Already stripped" = mirror entry present but EMPTY (that is what
+            // MirrorDenyAll/an empty loadout push leave behind), and a snapshot is
+            // waiting (bit 3 of the preset mask). In that state forward to Papyrus's
+            // undo instead of stripping a second time.
+            bool stripped = false;
+            bool hasUndo = false;
+            {
+                std::shared_lock lock(g_loadoutLock);
+                auto it = g_loadouts.find(actor->GetFormID());
+                stripped = it != g_loadouts.end() && it->second.empty();
+                auto pm = g_presetMasks.find(actor->GetFormID());
+                hasUndo = pm != g_presetMasks.end() && (pm->second & 8) != 0;
+            }
+            if (stripped && hasUndo) {
+                if (auto source = SKSE::GetModCallbackEventSource()) {
+                    SKSE::ModCallbackEvent ev{};
+                    ev.eventName = "DYF_Undo";
+                    ev.strArg = "";
+                    ev.numArg = 0.0f;
+                    ev.sender = nullptr;
+                    source->SendEvent(&ev);
+                }
+                return;
+            }
             auto eqm = RE::ActorEquipManager::GetSingleton();
             if (!eqm) {
                 return;
@@ -1168,6 +1193,61 @@ namespace {
         g_loadouts[a_actor->GetFormID()] = std::move(ids);
     }
 
+    // Papyrus native: DYF_Native.SyncWornArmor(Actor) - make the worn ARMOR match
+    // the mirror right now, on the game thread: strip worn armor outside the
+    // loadout, then equip loadout armor they carry (ReassertFromMirror). Weapons
+    // stay Papyrus's job (hand-slot arbitration). Papyrus calls this after a bulk
+    // loadout change (preset apply / undo) so the outfit swaps instantly and the
+    // panel repaint that follows reads the FINISHED state - EquipItemEx from the
+    // VM lands too late and the overlay repainted a half-applied outfit.
+    void SyncWornArmorImpl(RE::StaticFunctionTag*, RE::Actor* a_actor) {
+        if (!a_actor) {
+            return;
+        }
+        RE::FormID id = a_actor->GetFormID();
+        SKSE::GetTaskInterface()->AddTask([id]() {
+            auto actor = RE::TESForm::LookupByID<RE::Actor>(id);
+            if (!actor || actor->IsDead() || !actor->Is3DLoaded()) {
+                return;
+            }
+            std::unordered_set<RE::FormID> want;
+            {
+                std::shared_lock lock(g_loadoutLock);
+                auto it = g_loadouts.find(id);
+                if (it == g_loadouts.end()) {
+                    return;  // not managed - nothing to sync against
+                }
+                want = it->second;
+            }
+            auto eqm = RE::ActorEquipManager::GetSingleton();
+            if (!eqm) {
+                return;
+            }
+            // Strip pass: worn armor that is not in the (already-updated) mirror.
+            // force=TRUE on unequip, same as the undress-all path.
+            int stripped = 0;
+            auto inventory = actor->GetInventory([](RE::TESBoundObject& o) { return o.IsArmor(); });
+            for (auto& [obj, data] : inventory) {
+                auto armo = obj ? obj->As<RE::TESObjectARMO>() : nullptr;
+                if (!armo || want.contains(armo->GetFormID())) {
+                    continue;
+                }
+                if (actor->GetWornArmor(armo->GetFormID())) {
+                    eqm->UnequipObject(actor, armo, nullptr, 1, armo->GetEquipSlot(),
+                                       false, true, false, true, nullptr);
+                    ++stripped;
+                }
+            }
+            // Equip pass: loadout armor they carry (skips what is already on).
+            ReassertFromMirror(id);
+            logger::info("SyncWornArmor: mirror={} stripped={}", want.size(), stripped);
+            // Repaint from right here, like the undress-all fast path does: the
+            // armor state is final on this thread, and the panel must not depend
+            // on the rest of the Papyrus handler surviving to SendPanelRefresh.
+            PushList();
+        });
+    }
+
     // Papyrus native: DYF_Native.SetPresets(Actor, int) - which preset slots hold
     // a saved outfit (bit 0 = slot 1), for the overlay's preset buttons. Pushed on
     // load and after every save; the contents themselves stay in StorageUtil.
@@ -1316,6 +1396,7 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
     a_vm->RegisterFunction("SetLoadout", "DYF_Native", SetLoadoutImpl);
     a_vm->RegisterFunction("SetPresets", "DYF_Native", SetPresetsImpl);
+    a_vm->RegisterFunction("SyncWornArmor", "DYF_Native", SyncWornArmorImpl);
     a_vm->RegisterFunction("ClearAllLoadouts", "DYF_Native", ClearAllLoadoutsImpl);
     logger::info("DYF_Native registered");
     return true;
