@@ -58,6 +58,8 @@ EndEvent
 Function RegisterModEvents()
     RegisterForModEvent("DYF_ToggleItem", "OnDYFToggleItem")
     RegisterForModEvent("DYF_UndressAll", "OnDYFUndressAll")
+    RegisterForModEvent("DYF_PresetSave", "OnDYFPresetSave")
+    RegisterForModEvent("DYF_PresetApply", "OnDYFPresetApply")
 EndFunction
 
 ; Called by DYF_PlayerAlias on load. Re-assert every managed follower's outfit
@@ -94,6 +96,7 @@ Function SyncLoadouts()
         Actor a = StorageUtil.FormListGet(none, MANAGED_KEY, i) as Actor
         if a
             PushLoadout(a)
+            PushPresets(a)
         endif
         i += 1
     endwhile
@@ -231,6 +234,91 @@ Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender
     ; An empty loadout pushed down is what tells the hook to refuse EVERY armor
     ; equip on them - that is what keeps them stripped with no flicker.
     PushLoadout(follower)
+    follower.QueueNiNodeUpdate()
+    SendPanelRefresh()
+    RegisterForSingleUpdate(POLL_INTERVAL)
+EndEvent
+
+; -------------------------------------------------------------------
+; Outfit presets (three per-follower slots)
+; -------------------------------------------------------------------
+
+; Per-follower StorageUtil key of one preset slot ("1".."3"). Each preset is a
+; FormList shaped exactly like LOADOUT_KEY - a saved outfit is just a saved loadout.
+string Function PresetKey(string slot)
+    return "DYF_Preset" + slot
+EndFunction
+
+; Tell the plugin which slots are occupied (bit 0 = slot 1) so the overlay can
+; draw filled vs empty preset buttons. UI-only; the contents stay here.
+Function PushPresets(Actor akFollower)
+    int mask = 0
+    if StorageUtil.FormListCount(akFollower, PresetKey("1")) > 0
+        mask += 1
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey("2")) > 0
+        mask += 2
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey("3")) > 0
+        mask += 4
+    endif
+    DYF_Native.SetPresets(akFollower, mask)
+EndFunction
+
+; Overlay "save the current outfit into slot N" (strArg = "1".."3"). The current
+; loadout IS the outfit, so saving is a list copy. On a fresh follower
+; EnsureManaged seeds the loadout from what they are wearing right now, so Save
+; captures their current look even before any toggles.
+Event OnDYFPresetSave(string eventName, string strArg, float numArg, Form sender)
+    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    EnsureManaged(follower)
+    string pkey = PresetKey(strArg)
+    StorageUtil.FormListClear(follower, pkey)
+    Form[] load = StorageUtil.FormListToArray(follower, LOADOUT_KEY)
+    int i = 0
+    while i < load.Length
+        StorageUtil.FormListAdd(follower, pkey, load[i])
+        i += 1
+    endwhile
+    PushPresets(follower)
+    SendPanelRefresh()
+EndEvent
+
+; Overlay "apply outfit N": the preset becomes the loadout, then one
+; ReassertOutfit pass makes the worn state match - it equips what they still
+; carry and strips worn armor that is not in the outfit. Preset items no longer
+; in their inventory stay in the loadout on purpose: ReassertOutfit skips absent
+; pieces, and the outfit completes itself if the piece ever comes back.
+Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sender)
+    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    string pkey = PresetKey(strArg)
+    if StorageUtil.FormListCount(follower, pkey) <= 0
+        return ; empty slot - the overlay greys these out, but never trust the UI
+    endif
+    EnsureManaged(follower)
+    StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    Form[] outfitItems = StorageUtil.FormListToArray(follower, pkey)
+    int i = 0
+    while i < outfitItems.Length
+        StorageUtil.FormListAdd(follower, LOADOUT_KEY, outfitItems[i])
+        i += 1
+    endwhile
+    ; Arm the mirror BEFORE touching worn state - our own equips run through the
+    ; anti-auto-equip hook and would be refused with a stale mirror.
+    PushLoadout(follower)
+    ReassertOutfit(follower)
     follower.QueueNiNodeUpdate()
     SendPanelRefresh()
     RegisterForSingleUpdate(POLL_INTERVAL)
@@ -538,6 +626,9 @@ Function ClearAllManaged()
         Form a = StorageUtil.FormListGet(none, MANAGED_KEY, i)
         if a
             StorageUtil.FormListClear(a, LOADOUT_KEY)
+            StorageUtil.FormListClear(a, PresetKey("1"))
+            StorageUtil.FormListClear(a, PresetKey("2"))
+            StorageUtil.FormListClear(a, PresetKey("3"))
         endif
         i += 1
     endwhile

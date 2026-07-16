@@ -23,6 +23,11 @@ Function SetAccentColor(int aRgb) global native
 ; already armed before the engine dresses anyone; our push on load just confirms it.
 Function SetLoadout(Actor akActor, Form[] akItems) global native
 
+; Tell the plugin which outfit-preset slots hold a saved outfit for this follower
+; (bit 0 = slot 1), so the overlay can draw filled vs empty preset buttons. UI-only:
+; the preset contents live in StorageUtil. Pushed on load and after every save.
+Function SetPresets(Actor akActor, int aMask) global native
+
 ; Release everyone: drops the plugin's whole mirror so those followers go back to
 ; vanilla auto-equip. Used by the MCM's "Release all followers".
 Function ClearAllLoadouts() global native

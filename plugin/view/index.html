@@ -134,6 +134,20 @@
   .sbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
   .sbtn.active { color: #6ee7a8; border-color: rgba(110,231,168,0.55); }
 
+  /* Outfit preset slots (Follower tab). Filled slots are solid + accented; empty
+     ones dashed + dim. "Save" arms save mode (amber): the next slot click stores
+     the current outfit there. */
+  #presetbar { display: flex; gap: 4px; padding: 0 12px 4px; }
+  .pbtn {
+    flex: 1; text-align: center; padding: 5px 0; font-size: 11px;
+    color: #5d6470; border: 1px dashed rgba(255,255,255,0.12); border-radius: 7px;
+    cursor: pointer;
+  }
+  #presetSave { flex: 1.6; border-style: solid; color: #9aa0aa; }
+  .pbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
+  .pbtn.has { color: #6ee7a8; border-style: solid; border-color: rgba(110,231,168,0.35); }
+  .pbtn.arm { color: #ffd27d; border-style: solid; border-color: rgba(255,210,125,0.55); }
+
   /* Fixed height on purpose: #details is an in-flow flex child, so if it grew on
      hover the list above would reflow and rows would shift out from under the
      cursor (this made the last items of a long list unclickable). Sized to the
@@ -202,6 +216,12 @@
     <div class="sbtn" data-sort="worn" data-label="Worn" id="sortWorn">Worn</div>
     <div class="sbtn" data-sort="type" data-label="Type">Type</div>
     <div class="sbtn" data-sort="slot" data-label="Slot">Slot</div>
+  </div>
+  <div id="presetbar" style="display:none">
+    <div class="pbtn" data-slot="1">1</div>
+    <div class="pbtn" data-slot="2">2</div>
+    <div class="pbtn" data-slot="3">3</div>
+    <div class="pbtn" id="presetSave">Save</div>
   </div>
   <div id="actionbar" style="display:none"><div id="undressAll" class="abtn">Unequip all</div></div>
   <div id="picker"></div>
@@ -319,6 +339,7 @@
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
     document.querySelector("#sortbar").style.display   = "none";
+    document.querySelector("#presetbar").style.display = "none";
     document.querySelector("#actionbar").style.display = "none";
     showPane("#list", false);
     showPane("#plist", false);
@@ -341,12 +362,14 @@
     var f = activeTab === "follower";
     showPane("#list", f);
     showPane("#plist", !f);
-    // "Unequip all" only makes sense against the follower's own gear, and so does
-    // sorting by worn - Yours-tab rows have no worn state. (The payload's `worn`
-    // for player items is the player's OWN equipped gear - never sort by it.)
+    // "Unequip all", presets and worn-sorting only make sense against the
+    // follower's own gear - Yours-tab rows have no worn state. (The payload's
+    // `worn` for player items is the player's OWN equipped gear - never sort by it.)
     document.querySelector("#actionbar").style.display = f ? "" : "none";
+    document.querySelector("#presetbar").style.display = f ? "" : "none";
     document.querySelector("#sortWorn").style.display  = f ? "" : "none";
     if (!f && sortMode === "worn") { setSortMode("name"); } // its button just vanished
+    if (presetArm) { presetArm = false; updatePresetBar(); } // don't save blind
     document.querySelector("#tabFollower").className = "tab" + (f ? " active" : "");
     document.querySelector("#tabPlayer").className   = "tab" + (f ? "" : " active");
     document.querySelector("#filter").placeholder = f ? "Filter items…" : "Filter your items…";
@@ -399,6 +422,55 @@
       r.el.style.display = match ? "" : "none";
     });
   }
+
+  // ---- Outfit presets --------------------------------------------------------
+  //
+  // Three per-follower outfit slots (Follower tab only). Click a filled slot to
+  // apply it; click Save then a slot to store the current outfit there. The
+  // occupied-slots bitmask (bit 0 = slot 1) rides on every wardrobe push as
+  // data.presets; the contents live in Papyrus (StorageUtil).
+
+  var presetMask = 0;
+  var presetArm = false; // true = next slot click saves instead of applies
+  var presetSlotBtns = document.querySelectorAll("#presetbar .pbtn[data-slot]");
+  var presetSaveBtn = document.getElementById("presetSave");
+
+  function updatePresetBar() {
+    Array.prototype.forEach.call(presetSlotBtns, function (btn) {
+      var slot = parseInt(btn.getAttribute("data-slot"), 10);
+      var has = (presetMask & (1 << (slot - 1))) !== 0;
+      btn.className = "pbtn" + (has ? " has" : "") + (presetArm ? " arm" : "");
+      btn.title = presetArm ? ("Store the current outfit in slot " + slot)
+                : has ? ("Apply saved outfit " + slot)
+                : "Empty - click Save, then this slot, to store an outfit";
+    });
+    presetSaveBtn.className = "pbtn" + (presetArm ? " arm" : "");
+    presetSaveBtn.textContent = presetArm ? "Pick a slot…" : "Save";
+    presetSaveBtn.title = presetArm ? "Click again to cancel"
+                                    : "Save the current outfit into a slot";
+  }
+
+  function presetSlotClick(slot) {
+    var bit = 1 << (slot - 1);
+    if (presetArm) {
+      presetArm = false;
+      presetMask = presetMask | bit; // optimistic; the next push confirms
+      updatePresetBar();
+      try { window.dyf_presetsave(String(slot)); } catch (e) { dlog("presetsave ERR: " + e); }
+    } else if (presetMask & bit) {
+      try { window.dyf_presetapply(String(slot)); } catch (e) { dlog("presetapply ERR: " + e); }
+    }
+    // Empty slot, not saving: nothing to apply.
+  }
+
+  Array.prototype.forEach.call(presetSlotBtns, function (btn) {
+    btn.onclick = function () { presetSlotClick(parseInt(btn.getAttribute("data-slot"), 10)); };
+  });
+  presetSaveBtn.onclick = function () {
+    presetArm = !presetArm;
+    updatePresetBar();
+  };
+  updatePresetBar();
 
   // ---- Keyboard navigation ---------------------------------------------------
   //
@@ -489,6 +561,16 @@
         break;
       case 70:                                                 // F - focus filter
         elFilter.focus();
+        break;
+      case 49: case 50: case 51:                               // 1-3 - preset slots
+        if (panelMode === "wardrobe" && activeTab === "follower") {
+          presetSlotClick(e.keyCode - 48);
+        }
+        break;
+      case 27:                                                 // Esc - cancel Save
+        if (!presetArm) { return; }
+        presetArm = false;
+        updatePresetBar();
         break;
       default:
         return; // unhandled: leave the event alone
@@ -908,6 +990,12 @@
       scrollMemo["#list"] = 0; // a freshly picked follower starts at the top
       enterWardrobe();
     }
+
+    // Preset slot states ride on every wardrobe push and can change while the
+    // item set stays identical (a save fills a slot), so paint them BEFORE the
+    // same-set early return below.
+    presetMask = data.presets || 0;
+    updatePresetBar();
 
     // Order-independent signature - changing the sort alone must not look like a
     // different item set and force a rebuild. Computed before sorting: the common
