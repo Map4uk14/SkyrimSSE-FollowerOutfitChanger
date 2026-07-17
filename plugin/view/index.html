@@ -20,8 +20,8 @@
   html, body { margin: 0; padding: 0; background: transparent; }
 
   #panel {
-    position: fixed; top: 12%; left: 40px;
-    width: 440px; max-height: 84vh;
+    position: fixed; top: 5vh; left: 40px;
+    width: 440px; max-height: 90vh;
     display: flex; flex-direction: column;
     background: rgba(20, 22, 28, 0.92);
     border: 1px solid rgba(255,255,255,0.12);
@@ -310,6 +310,27 @@
     } catch (e) { dlog("dyfAccent ERR: " + e); }
   };
 
+  // Overlay size from the MCM slider. The plugin calls dyfScale(percent) when
+  // the panel opens. WebKit's zoom property re-lays-out with scaled lengths so
+  // text stays crisp (transform:scale would rasterize the layout and blur it).
+  // The max-height compensation is measured, not assumed: whether zoom
+  // multiplies vh units varies by WebKit age, so apply, measure, and only
+  // shrink max-height if the panel actually overflows the viewport.
+  window.dyfScale = function (pct) {
+    try {
+      pct = parseInt(pct, 10);
+      if (!pct || pct < 25 || pct > 400) { return; }
+      var z = pct / 100;
+      var p = document.getElementById("panel");
+      p.style.zoom = z;
+      p.style.maxHeight = "90vh";
+      var r = p.getBoundingClientRect();
+      if (r.height > 0 && r.bottom > 0.98 * window.innerHeight) {
+        p.style.maxHeight = (90 / z) + "vh";
+      }
+    } catch (e) { dlog("dyfScale ERR: " + e); }
+  };
+
   // Panel has two top-level modes: the follower "picker" and the "wardrobe".
   // Within the wardrobe, a tab switches between the follower's own items and the
   // player's ("Yours"). Refreshes from the plugin repaint the underlying lists
@@ -537,7 +558,7 @@
     if (!rows.length) { return; }
     var idx = rows.indexOf(selectedRow(pane)); // -1 when none/hidden -> start at edge
     idx = idx === -1 ? (dir > 0 ? 0 : rows.length - 1)
-                     : Math.max(0, Math.min(rows.length - 1, idx + dir));
+                     : (idx + dir + rows.length) % rows.length; // wraps at both ends
     selectRow(pane, rows[idx]);
   }
 

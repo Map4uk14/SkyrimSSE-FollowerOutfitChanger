@@ -121,6 +121,10 @@ Function SyncSettings()
     if accent != 0
         DYF_Native.SetAccentColor(accent)
     endif
+    int scale = MCM.GetModSettingInt("DressYourFollowers", "iUiScale:General")
+    if scale > 0
+        DYF_Native.SetUiScale(scale)
+    endif
 EndFunction
 
 ; -------------------------------------------------------------------

@@ -14,6 +14,10 @@ Function SetToggleKey(int aKeyCode) global native
 ; to the overlay CSS the next time the panel opens.
 Function SetAccentColor(int aRgb) global native
 
+; Push the MCM overlay size (percent, 100 = default) to the plugin, which applies
+; it to the overlay the next time the panel opens.
+Function SetUiScale(int aPercent) global native
+
 ; Mirror a managed follower's saved loadout down to the plugin. The plugin's
 ; anti-auto-equip hook runs inside the engine's equip path and cannot call into
 ; the VM, so it needs its own copy: it refuses any armor equip on a managed

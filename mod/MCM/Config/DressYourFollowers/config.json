@@ -1,7 +1,8 @@
 {
     "modName": "DressYourFollowers",
-    "displayName": "Dress Your Followers",
+    "displayName": "Follower Outfit Changer",
     "minMcmVersion": 11,
+    "cursorFillMode": "topToBottom",
     "pluginRequirements": [
         "DressYourFollowers.esp"
     ],
@@ -38,18 +39,17 @@
             }
         },
         {
-            "type": "header",
-            "text": "Controls"
-        },
-        {
-            "type": "text",
-            "text": "How to use",
-            "help": "Look at a follower and press the wardrobe hotkey (default F4) to open the overlay, then tick items to dress them. Requires the PrismaUI framework."
-        },
-        {
-            "type": "text",
-            "text": "Follower manager conflicts",
-            "help": "If you use NFF/EFF/AFT outfit management on a follower, turn it off for that follower before dressing them here, or the two systems will fight."
+            "id": "iUiScale:General",
+            "type": "slider",
+            "text": "Overlay size",
+            "help": "Scale of the wardrobe overlay window and text. 100% is the default; raise it if the overlay is hard to read. Takes effect next time the overlay opens.",
+            "valueOptions": {
+                "min": 50,
+                "max": 200,
+                "step": 5,
+                "formatString": "{0}%",
+                "sourceType": "ModSettingInt"
+            }
         },
         {
             "type": "header",
@@ -66,10 +66,6 @@
                     "(open menu to refresh)"
                 ]
             }
-        },
-        {
-            "type": "header",
-            "text": "Maintenance"
         },
         {
             "type": "text",
@@ -92,6 +88,21 @@
                 "scriptName": "DYF_Main",
                 "function": "ClearAllManaged"
             }
+        },
+        {
+            "type": "header",
+            "text": "Help",
+            "position": 1
+        },
+        {
+            "type": "text",
+            "text": "How to use",
+            "help": "Look at a follower and press the wardrobe hotkey (default F4) to open the overlay, then tick items to dress them. Requires the PrismaUI framework."
+        },
+        {
+            "type": "text",
+            "text": "Follower manager conflicts",
+            "help": "If you use NFF/EFF/AFT outfit management on a follower, turn it off for that follower before dressing them here, or the two systems will fight."
         }
     ]
 }

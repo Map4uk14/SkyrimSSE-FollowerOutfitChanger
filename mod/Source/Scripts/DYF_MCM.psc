@@ -34,7 +34,7 @@ EndEvent
 ; Push the overlay hotkey / accent colour to the plugin the moment they change,
 ; so a rebind or colour pick takes effect without needing a reload.
 Event OnSettingChange(string a_ID)
-    if a_ID == "iOpenKey:General" || a_ID == "iAccent:General"
+    if a_ID == "iOpenKey:General" || a_ID == "iAccent:General" || a_ID == "iUiScale:General"
         DYF_Main main = Main()
         if main
             main.SyncSettings()

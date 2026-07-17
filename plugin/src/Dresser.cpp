@@ -38,6 +38,10 @@ namespace {
     // -1 = no custom accent set yet (the view keeps its built-in theme colour).
     std::atomic<std::int32_t> g_accentRgb{-1};
 
+    // Overlay size in percent (100 = default), pushed from the MCM via SetUiScale.
+    // -1 = not set yet (the view keeps its built-in size).
+    std::atomic<std::int32_t> g_uiScale{-1};
+
     // Vanilla CurrentFollowerFaction [FACT:0005C84E].
     constexpr RE::FormID kFollowerFactionId = 0x0005C84E;
 
@@ -785,6 +789,21 @@ namespace {
         g_prisma->Invoke(g_view, buf);
     }
 
+    // Push the configured overlay size to the view. No-op until the MCM has
+    // supplied one (g_uiScale < 0), so the view keeps its default size.
+    void PushUiScale() {
+        if (!g_prisma || !g_view) {
+            return;
+        }
+        std::int32_t pct = g_uiScale.load();
+        if (pct <= 0) {
+            return;
+        }
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "dyfScale(%d)", pct);
+        g_prisma->Invoke(g_view, buf);
+    }
+
     void OpenPanel() {
         // Only in normal gameplay - not at the main menu, in a loading screen or
         // while a pausing menu (journal, console, ...) is up.
@@ -797,7 +816,8 @@ namespace {
         g_prisma->Show(g_view);
         g_prisma->Focus(g_view, false, false);  // pauseGame=false: watch them live
         g_open.store(true);
-        PushAccent();  // apply the user's accent before the list paints
+        PushAccent();   // apply the user's accent before the list paints
+        PushUiScale();  // and their overlay size
 
         // Refresh the Yours tab on every open. The view is a page that outlives the
         // panel, so it keeps whatever it was last sent: reopening while Yours was
@@ -1162,6 +1182,11 @@ namespace {
         g_toggleKey.store(a_key);
     }
 
+    // Papyrus native: DYF_Native.SetUiScale(int) - overlay size in percent.
+    void SetUiScaleImpl(RE::StaticFunctionTag*, std::int32_t a_percent) {
+        g_uiScale.store(a_percent);
+    }
+
     // Papyrus native: DYF_Native.SetAccentColor(int) - overlay accent as 0xRRGGBB.
     void SetAccentColorImpl(RE::StaticFunctionTag*, std::int32_t a_rgb) {
         g_accentRgb.store(a_rgb);
@@ -1406,6 +1431,7 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("GetPanelTarget", "DYF_Native", GetPanelTargetImpl);
     a_vm->RegisterFunction("SetToggleKey", "DYF_Native", SetToggleKeyImpl);
     a_vm->RegisterFunction("SetAccentColor", "DYF_Native", SetAccentColorImpl);
+    a_vm->RegisterFunction("SetUiScale", "DYF_Native", SetUiScaleImpl);
     a_vm->RegisterFunction("SetLoadout", "DYF_Native", SetLoadoutImpl);
     a_vm->RegisterFunction("SetPresets", "DYF_Native", SetPresetsImpl);
     a_vm->RegisterFunction("SyncWornArmor", "DYF_Native", SyncWornArmorImpl);
