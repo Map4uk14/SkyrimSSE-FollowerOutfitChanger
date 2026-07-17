@@ -1,5 +1,5 @@
 #pragma once
-// Dress Your Followers - PrismaUI dressing overlay.
+// Follower Outfit Changer - PrismaUI dressing overlay.
 // A non-pausing HTML overlay listing the crosshair follower's wearables with
 // live checkboxes. The panel is a view + input surface only: toggles are handed
 // to the Papyrus controller (DYF_ToggleItem mod event) which owns the proven

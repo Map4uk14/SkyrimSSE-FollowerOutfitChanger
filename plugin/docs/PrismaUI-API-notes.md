@@ -51,7 +51,7 @@ that fail silently (no crash, no log).
 ## Deploy
 
 - CMake POST_BUILD copies `view/index.html` to
-  `Data/PrismaUI/views/DressYourFollowers/index.html` and the DLL to
+  `Data/PrismaUI/views/FollowerOutfitChanger/index.html` and the DLL to
   `Data/SKSE/Plugins/`. Skyrim must be fully restarted to pick up either.
 
 ## Hand-built JSON is a trap — validate the raw string first

@@ -1,5 +1,5 @@
 ========================================================================
- DRESS YOUR FOLLOWERS
+ FOLLOWER OUTFIT CHANGER
  Redress your followers with a hotkey - and it sticks.
  Skyrim Special Edition / Anniversary Edition (all 1.6.x)
 ========================================================================
@@ -35,7 +35,7 @@ setups.
 
 HOW TO USE
 ----------
-1. Open the MCM ("Dress Your Followers") and bind the "Open wardrobe
+1. Open the MCM ("Follower Outfit Changer") and bind the "Open wardrobe
    hotkey" (it ships unbound). The try-on key defaults to Left Shift.
 2. In the world, look at one of your followers and press the hotkey.
 3. Give them clothing/armor and close the menu - they put it on.

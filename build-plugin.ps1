@@ -1,4 +1,4 @@
-# Dress Your Followers - C++ SKSE plugin build
+# Follower Outfit Changer - C++ SKSE plugin build
 # Sets up the MSVC dev environment + required env vars, then configures and
 # builds the ImGui plugin with CMake/Ninja/vcpkg. Release by default.
 param([string]$Config = "release")

@@ -1371,7 +1371,7 @@ void Dresser::Init() {
         return;
     }
 
-    g_view = g_prisma->CreateView("DressYourFollowers/index.html", [](PrismaView view) {
+    g_view = g_prisma->CreateView("FollowerOutfitChanger/index.html", [](PrismaView view) {
         logger::info("Dresser view DOM ready ({})", view);
         // Start hidden; opened with the toggle key while looking at a follower.
         g_prisma->Hide(view);

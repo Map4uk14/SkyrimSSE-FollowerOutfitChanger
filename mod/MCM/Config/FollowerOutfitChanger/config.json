@@ -1,10 +1,10 @@
 {
-    "modName": "DressYourFollowers",
+    "modName": "FollowerOutfitChanger",
     "displayName": "Follower Outfit Changer",
     "minMcmVersion": 11,
     "cursorFillMode": "topToBottom",
     "pluginRequirements": [
-        "DressYourFollowers.esp"
+        "FollowerOutfitChanger.esp"
     ],
     "content": [
         {
@@ -73,7 +73,7 @@
             "help": "Immediately re-apply the saved outfit to every nearby managed follower. Use if someone looks wrong after a script-heavy event.",
             "action": {
                 "type": "CallFunction",
-                "form": "DressYourFollowers.esp|0xD62",
+                "form": "FollowerOutfitChanger.esp|0xD62",
                 "scriptName": "DYF_Main",
                 "function": "ReassertAllLoaded"
             }
@@ -84,7 +84,7 @@
             "help": "Stop managing every follower. They keep what they are wearing now, but the mod no longer re-asserts it, and their original default outfit is restored behind the scenes. Use before uninstalling.",
             "action": {
                 "type": "CallFunction",
-                "form": "DressYourFollowers.esp|0xD62",
+                "form": "FollowerOutfitChanger.esp|0xD62",
                 "scriptName": "DYF_Main",
                 "function": "ClearAllManaged"
             }

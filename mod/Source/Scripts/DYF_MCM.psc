@@ -1,8 +1,8 @@
 ScriptName DYF_MCM extends MCM_ConfigBase
-{Dress Your Followers - MCM anchor.
+{Follower Outfit Changer - MCM anchor.
  MCM Helper requires a script extending MCM_ConfigBase on a quest to
  register the mod's menu. Page content is declarative, in
- MCM\Config\DressYourFollowers\config.json; the only thing implemented here is
+ MCM\Config\FollowerOutfitChanger\config.json; the only thing implemented here is
  populating the read-only "Dressed followers" list from the live registry.}
 
 ; The dressed-followers menu is a browsable read-only list: its options are the
@@ -12,7 +12,7 @@ ScriptName DYF_MCM extends MCM_ConfigBase
 string Property MANAGED_LIST_ID = "iManagedList:Maintenance" AutoReadOnly
 
 DYF_Main Function Main()
-    return Game.GetFormFromFile(0xD62, "DressYourFollowers.esp") as DYF_Main
+    return Game.GetFormFromFile(0xD62, "FollowerOutfitChanger.esp") as DYF_Main
 EndFunction
 
 Function RefreshManagedList()

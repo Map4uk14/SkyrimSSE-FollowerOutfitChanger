@@ -1,8 +1,8 @@
 ScriptName DYF_Main extends Quest
-{Dress Your Followers - main controller (PrismaUI edition).
+{Follower Outfit Changer - main controller (PrismaUI edition).
 
  The dressing UI is a PrismaUI HTML overlay driven by the SKSE plugin
- (DressYourFollowers.dll). Look at a follower and press F4 to open it; each
+ (FollowerOutfitChanger.dll). Look at a follower and press F4 to open it; each
  checkbox toggle sends a "DYF_ToggleItem" mod event to OnDYFToggleItem below,
  which owns all equip/unequip and persistence. This script no longer opens a
  vanilla trade menu - that flow and the in-menu try-on were removed when the UI
@@ -76,6 +76,9 @@ Function ResumeManagement()
         ; the engine's auto-equip only for loadouts it knows about, and it starts
         ; every launch empty.
         SyncLoadouts()
+        ; With the mirror armed, re-bake anyone whose empty outfit went missing
+        ; (saves from before the esp was renamed to FollowerOutfitChanger.esp).
+        MigrateBakedOutfits()
         ReassertAllLoaded()
         RegisterForSingleUpdate(POLL_INTERVAL)
     endif
@@ -107,21 +110,45 @@ Function SyncLoadouts()
     endwhile
 EndFunction
 
+; The 1.2 esp rename (DressYourFollowers.esp -> FollowerOutfitChanger.esp)
+; orphans the SetOutfit bake in older saves: the baked outfit references the old
+; file, so the engine drops it on load and managed followers silently get their
+; original default outfit back - which the engine then re-equips at every
+; reversion trigger. Re-bake EmptyOutfit for anyone who lost it. Bonus: their
+; original outfit is visible again at that moment, so followers first dressed by
+; pre-1.1 versions (which never recorded originals) finally get a recording,
+; making release-restore work for them too. No-op once every base reads
+; EmptyOutfit, so this is safe to run on every load.
+Function MigrateBakedOutfits()
+    if !EmptyOutfit
+        return
+    endif
+    int n = StorageUtil.FormListCount(none, MANAGED_KEY)
+    int i = 0
+    while i < n
+        Actor a = StorageUtil.FormListGet(none, MANAGED_KEY, i) as Actor
+        if a && DYF_Native.GetDefaultOutfit(a) != EmptyOutfit
+            NeutraliseDefaultOutfit(a)
+        endif
+        i += 1
+    endwhile
+EndFunction
+
 ; Push MCM-configured plugin settings (overlay hotkey + accent colour) down to the
 ; SKSE plugin. The plugin resets these to its own defaults on every launch, so this
 ; runs on each game load and whenever the MCM value changes (see DYF_MCM). A key of
 ; 0 means the MCM has not been read yet - leave the plugin default in place; -1
 ; means the user deliberately unbound the key.
 Function SyncSettings()
-    int k = MCM.GetModSettingInt("DressYourFollowers", "iOpenKey:General")
+    int k = MCM.GetModSettingInt("FollowerOutfitChanger", "iOpenKey:General")
     if k != 0
         DYF_Native.SetToggleKey(k)
     endif
-    int accent = MCM.GetModSettingInt("DressYourFollowers", "iAccent:General")
+    int accent = MCM.GetModSettingInt("FollowerOutfitChanger", "iAccent:General")
     if accent != 0
         DYF_Native.SetAccentColor(accent)
     endif
-    int scale = MCM.GetModSettingInt("DressYourFollowers", "iUiScale:General")
+    int scale = MCM.GetModSettingInt("FollowerOutfitChanger", "iUiScale:General")
     if scale > 0
         DYF_Native.SetUiScale(scale)
     endif
@@ -166,7 +193,7 @@ EndFunction
 ; whole toggle is one atomic step - no other toggle or poll tick can interleave
 ; and corrupt the state, and we never read half-applied worn gear.
 Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender)
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     Form piece = sender
@@ -228,7 +255,7 @@ EndEvent
 ; next tick would put the whole outfit straight back on. Their gear stays in their
 ; inventory, so re-dressing them is just ticking the boxes again.
 Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender)
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     Actor follower = DYF_Native.GetPanelTarget()
@@ -300,7 +327,7 @@ EndFunction
 ; EnsureManaged seeds the loadout from what they are wearing right now, so Save
 ; captures their current look even before any toggles.
 Event OnDYFPresetSave(string eventName, string strArg, float numArg, Form sender)
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     Actor follower = DYF_Native.GetPanelTarget()
@@ -319,7 +346,7 @@ EndEvent
 ; in their inventory stay in the loadout on purpose: ReassertOutfit skips absent
 ; pieces, and the outfit completes itself if the piece ever comes back.
 Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sender)
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     Actor follower = DYF_Native.GetPanelTarget()
@@ -364,7 +391,7 @@ EndEvent
 ; "Undo" pseudo-slot, which swaps snapshot and current outfit - so Undo twice
 ; toggles between the two.
 Event OnDYFUndo(string eventName, string strArg, float numArg, Form sender)
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     Actor follower = DYF_Native.GetPanelTarget()
@@ -499,31 +526,54 @@ Function EnsureManaged(Actor akFollower)
     PushLoadout(akFollower)
 
     if EmptyOutfit
-        ; Record the original default outfit before baking in the empty one, so
-        ; ClearAllManaged can restore it. Guard: if a base already reads
-        ; EmptyOutfit (managed before on an older version that never restored),
-        ; that must not be recorded as "original".
-        Outfit orig = DYF_Native.GetDefaultOutfit(akFollower)
-        if orig && orig != EmptyOutfit
-            StorageUtil.SetFormValue(akFollower, ORIG_OUTFIT_KEY, orig)
-        endif
-        akFollower.SetOutfit(EmptyOutfit)
-        i = 0
-        while i < keepCount
-            Armor p = keep[i] as Armor
-            if p
-                if akFollower.GetItemCount(p) <= 0
-                    akFollower.AddItem(p, 1, true) ; SetOutfit stripped it - put it back
-                endif
-                ; Only re-equip pieces SetOutfit actually knocked off; re-equipping
-                ; ones still worn would flicker them for no reason.
-                if !akFollower.IsEquipped(p)
-                    akFollower.EquipItemEx(p, 0, false, false)
-                endif
-            endif
-            i += 1
-        endwhile
+        NeutraliseDefaultOutfit(akFollower)
     endif
+EndFunction
+
+; Bake EmptyOutfit into the follower's base so the engine has nothing of its own
+; to revert to, recording their real default outfit first so ClearAllManaged can
+; restore it. The current worn armor is captured and put back afterwards, because
+; SetOutfit strips the old outfit's items. Guards: never record EmptyOutfit
+; itself as "original" (a base can already read EmptyOutfit if an old version
+; managed it and never restored), and never overwrite a recording that exists.
+; Callers check EmptyOutfit is assigned.
+Function NeutraliseDefaultOutfit(Actor akFollower)
+    Outfit orig = DYF_Native.GetDefaultOutfit(akFollower)
+    if orig && orig != EmptyOutfit && !StorageUtil.HasFormValue(akFollower, ORIG_OUTFIT_KEY)
+        StorageUtil.SetFormValue(akFollower, ORIG_OUTFIT_KEY, orig)
+    endif
+
+    Form[] keep = new Form[32]
+    int keepCount = 0
+    int bit = 0
+    int mask = 1
+    while bit < 32
+        Armor worn = akFollower.GetWornForm(mask) as Armor
+        if worn && keep.Find(worn) < 0 && keepCount < 32
+            keep[keepCount] = worn
+            keepCount += 1
+        endif
+        bit += 1
+        mask *= 2
+    endwhile
+
+    akFollower.SetOutfit(EmptyOutfit)
+
+    int i = 0
+    while i < keepCount
+        Armor p = keep[i] as Armor
+        if p
+            if akFollower.GetItemCount(p) <= 0
+                akFollower.AddItem(p, 1, true) ; SetOutfit stripped it - put it back
+            endif
+            ; Only re-equip pieces SetOutfit actually knocked off; re-equipping
+            ; ones still worn would flicker them for no reason.
+            if !akFollower.IsEquipped(p)
+                akFollower.EquipItemEx(p, 0, false, false)
+            endif
+        endif
+        i += 1
+    endwhile
 EndFunction
 
 ; Fire-and-forget signal to the SKSE plugin: re-read the target follower's worn
@@ -623,7 +673,7 @@ EndFunction
 ; that stream in just after the transition are caught within half a second
 ; instead of on the slow poll.
 Function ReassertSoon()
-    if !MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
     if StorageUtil.FormListCount(none, MANAGED_KEY) <= 0
@@ -673,7 +723,7 @@ string[] Function GetManagedNames()
 EndFunction
 
 Event OnUpdate()
-    if MCM.GetModSettingBool("DressYourFollowers", "bModEnabled:General")
+    if MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         ReassertAllLoaded()
     endif
     ; While the overlay is open, keep its checkboxes in sync with reality in case

@@ -8,7 +8,7 @@ if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
     message(FATAL_ERROR "Missing COMMONLIB_SSE_FOLDER environment variable")
 endif()
 
-project(DressYourFollowers VERSION 1.0.0.0 LANGUAGES CXX)
+project(FollowerOutfitChanger VERSION 1.2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 # --- copy the built DLL + PrismaUI view into the game's Data folder ---
 # PrismaUI resolves CreateView() paths relative to Data/PrismaUI/views/, so the
-# HTML must live at Data/PrismaUI/views/DressYourFollowers/index.html.
+# HTML must live at Data/PrismaUI/views/FollowerOutfitChanger/index.html.
 if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{SKYRIM_FOLDER}/Data/SKSE/Plugins"
@@ -44,9 +44,9 @@ if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
             "$<TARGET_FILE:${PROJECT_NAME}>"
             "$ENV{SKYRIM_FOLDER}/Data/SKSE/Plugins/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
         COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$ENV{SKYRIM_FOLDER}/Data/PrismaUI/views/DressYourFollowers"
+            "$ENV{SKYRIM_FOLDER}/Data/PrismaUI/views/FollowerOutfitChanger"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/view/index.html"
-            "$ENV{SKYRIM_FOLDER}/Data/PrismaUI/views/DressYourFollowers/index.html"
+            "$ENV{SKYRIM_FOLDER}/Data/PrismaUI/views/FollowerOutfitChanger/index.html"
         VERBATIM)
 endif()

@@ -1,4 +1,4 @@
-# Dress Your Followers - build script
+# Follower Outfit Changer - build script
 # Usage:
 #   .\build.ps1            -> compile scripts to mod\Scripts
 #   .\build.ps1 -Deploy    -> compile, then copy mod files into the game Data folder (dev iteration)
@@ -59,9 +59,9 @@ Write-Host "Compile OK -> $out" -ForegroundColor Green
 if ($Deploy) {
     $data = Join-Path $Game "Data"
     Copy-Item (Join-Path $Proj "mod\Scripts\*.pex") (Join-Path $data "Scripts") -Force
-    New-Item -ItemType Directory -Force (Join-Path $data "MCM\Config\DressYourFollowers") | Out-Null
-    Copy-Item (Join-Path $Proj "mod\MCM\Config\DressYourFollowers\*") (Join-Path $data "MCM\Config\DressYourFollowers") -Force
-    $esp = Join-Path $Proj "mod\DressYourFollowers.esp"
+    New-Item -ItemType Directory -Force (Join-Path $data "MCM\Config\FollowerOutfitChanger") | Out-Null
+    Copy-Item (Join-Path $Proj "mod\MCM\Config\FollowerOutfitChanger\*") (Join-Path $data "MCM\Config\FollowerOutfitChanger") -Force
+    $esp = Join-Path $Proj "mod\FollowerOutfitChanger.esp"
     if (Test-Path $esp) { Copy-Item $esp $data -Force }
     Write-Host "Deployed to $data (note: Vortex may flag these as external changes - that's fine for dev)" -ForegroundColor Yellow
 }
@@ -76,15 +76,15 @@ if ($Package) {
     New-Item -ItemType Directory -Force $staging | Out-Null
     Copy-Item (Join-Path $Proj "mod\*") $staging -Recurse -Force
 
-    $dll = Join-Path $Proj "plugin\build\release\DressYourFollowers.dll"
+    $dll = Join-Path $Proj "plugin\build\release\FollowerOutfitChanger.dll"
     if (-not (Test-Path $dll)) { throw "Plugin DLL not found at $dll - run build-plugin.ps1 first" }
     New-Item -ItemType Directory -Force (Join-Path $staging "SKSE\Plugins") | Out-Null
     Copy-Item $dll (Join-Path $staging "SKSE\Plugins") -Force
 
-    New-Item -ItemType Directory -Force (Join-Path $staging "PrismaUI\views\DressYourFollowers") | Out-Null
-    Copy-Item (Join-Path $Proj "plugin\view\index.html") (Join-Path $staging "PrismaUI\views\DressYourFollowers") -Force
+    New-Item -ItemType Directory -Force (Join-Path $staging "PrismaUI\views\FollowerOutfitChanger") | Out-Null
+    Copy-Item (Join-Path $Proj "plugin\view\index.html") (Join-Path $staging "PrismaUI\views\FollowerOutfitChanger") -Force
 
-    $zipOut = Join-Path $dist "DressYourFollowers.zip"
+    $zipOut = Join-Path $dist "FollowerOutfitChanger.zip"
     if (Test-Path $zipOut) { Remove-Item $zipOut -Force -Confirm:$false }
     Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipOut
     Remove-Item $staging -Recurse -Force -Confirm:$false
