@@ -67,11 +67,26 @@ if ($Deploy) {
 }
 
 # --- Package: zip for Vortex/Nexus ---
+# Stages a Data-relative layout so the SKSE plugin DLL and PrismaUI view end up
+# alongside the Papyrus/MCM/esp files, not just the mod\ subset.
 if ($Package) {
     $dist = Join-Path $Proj "dist"
-    New-Item -ItemType Directory -Force $dist | Out-Null
+    $staging = Join-Path $dist "staging"
+    if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -Confirm:$false }
+    New-Item -ItemType Directory -Force $staging | Out-Null
+    Copy-Item (Join-Path $Proj "mod\*") $staging -Recurse -Force
+
+    $dll = Join-Path $Proj "plugin\build\release\DressYourFollowers.dll"
+    if (-not (Test-Path $dll)) { throw "Plugin DLL not found at $dll - run build-plugin.ps1 first" }
+    New-Item -ItemType Directory -Force (Join-Path $staging "SKSE\Plugins") | Out-Null
+    Copy-Item $dll (Join-Path $staging "SKSE\Plugins") -Force
+
+    New-Item -ItemType Directory -Force (Join-Path $staging "PrismaUI\views\DressYourFollowers") | Out-Null
+    Copy-Item (Join-Path $Proj "plugin\view\index.html") (Join-Path $staging "PrismaUI\views\DressYourFollowers") -Force
+
     $zipOut = Join-Path $dist "DressYourFollowers.zip"
     if (Test-Path $zipOut) { Remove-Item $zipOut -Force -Confirm:$false }
-    Compress-Archive -Path (Join-Path $Proj "mod\*") -DestinationPath $zipOut
+    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipOut
+    Remove-Item $staging -Recurse -Force -Confirm:$false
     Write-Host "Packaged -> $zipOut" -ForegroundColor Green
 }
