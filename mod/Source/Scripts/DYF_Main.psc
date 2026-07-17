@@ -14,8 +14,12 @@ ScriptName DYF_Main extends Quest
 
 ; StorageUtil (PapyrusUtil) keys. MANAGED_KEY is a global list of dressed
 ; followers; LOADOUT_KEY is per-actor, holding the armor they should wear.
+; ORIG_OUTFIT_KEY is per-actor, holding the default outfit (DOFT) the follower
+; had before EnsureManaged baked in EmptyOutfit - SetOutfit persists in the
+; save, so "Release all followers" needs this to hand them back to vanilla.
 string Property MANAGED_KEY = "DYF_Managed" AutoReadOnly
 string Property LOADOUT_KEY = "DYF_Loadout" AutoReadOnly
+string Property ORIG_OUTFIT_KEY = "DYF_OrigOutfit" AutoReadOnly
 
 ; Re-assert cadence while at least one managed follower is loaded.
 float Property POLL_INTERVAL = 3.0 AutoReadOnly
@@ -491,6 +495,14 @@ Function EnsureManaged(Actor akFollower)
     PushLoadout(akFollower)
 
     if EmptyOutfit
+        ; Record the original default outfit before baking in the empty one, so
+        ; ClearAllManaged can restore it. Guard: if a base already reads
+        ; EmptyOutfit (managed before on an older version that never restored),
+        ; that must not be recorded as "original".
+        Outfit orig = DYF_Native.GetDefaultOutfit(akFollower)
+        if orig && orig != EmptyOutfit
+            StorageUtil.SetFormValue(akFollower, ORIG_OUTFIT_KEY, orig)
+        endif
         akFollower.SetOutfit(EmptyOutfit)
         i = 0
         while i < keepCount
@@ -680,12 +692,17 @@ EndEvent
 
 ; MCM "Release all followers": stop managing everyone. They keep whatever they
 ; are wearing; the mod simply stops re-asserting it. Used before uninstalling.
+; Each follower's original default outfit is restored first (see
+; RestoreDefaultOutfit) - without that, EmptyOutfit stays baked into the save
+; and an uninstall leaves them with nothing to be dressed in.
 Function ClearAllManaged()
     int n = StorageUtil.FormListCount(none, MANAGED_KEY)
     int i = 0
     while i < n
         Form a = StorageUtil.FormListGet(none, MANAGED_KEY, i)
         if a
+            RestoreDefaultOutfit(a as Actor)
+            StorageUtil.UnsetFormValue(a, ORIG_OUTFIT_KEY)
             StorageUtil.FormListClear(a, LOADOUT_KEY)
             StorageUtil.FormListClear(a, PresetKey("1"))
             StorageUtil.FormListClear(a, PresetKey("2"))
@@ -699,4 +716,50 @@ Function ClearAllManaged()
     ; auto-equip for followers we no longer manage - they'd stay frozen in whatever
     ; they had on. Releasing means handing them back to vanilla.
     DYF_Native.ClearAllLoadouts()
+EndFunction
+
+; Put the original default outfit (recorded by EnsureManaged) back on a released
+; follower's base. Runs BEFORE ClearAllLoadouts, i.e. while the plugin's hook is
+; still armed: SetOutfit's attempt to dress them in the restored default gear is
+; refused, and the pieces we re-equip below are loadout pieces the hook lets
+; through - so their current look survives the restore. They revert to default
+; gear whenever the engine next re-evaluates them, which is vanilla behavior.
+Function RestoreDefaultOutfit(Actor akFollower)
+    if !akFollower
+        return
+    endif
+    Outfit orig = StorageUtil.GetFormValue(akFollower, ORIG_OUTFIT_KEY) as Outfit
+    if !orig
+        ; Never recorded - the base had no default outfit (or was managed by an
+        ; older version). EmptyOutfit stays, which dresses them in nothing, the
+        ; same as no outfit at all.
+        return
+    endif
+
+    ; Capture the current worn armor so it can be put back after SetOutfit
+    ; (which strips and re-dresses from the new outfit).
+    Form[] keep = new Form[32]
+    int keepCount = 0
+    int bit = 0
+    int mask = 1
+    while bit < 32
+        Armor worn = akFollower.GetWornForm(mask) as Armor
+        if worn && keep.Find(worn) < 0 && keepCount < 32
+            keep[keepCount] = worn
+            keepCount += 1
+        endif
+        bit += 1
+        mask *= 2
+    endwhile
+
+    akFollower.SetOutfit(orig)
+
+    int i = 0
+    while i < keepCount
+        Armor p = keep[i] as Armor
+        if p && !akFollower.IsEquipped(p)
+            akFollower.EquipItemEx(p, 0, false, false)
+        endif
+        i += 1
+    endwhile
 EndFunction

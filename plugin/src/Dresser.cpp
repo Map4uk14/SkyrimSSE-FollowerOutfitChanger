@@ -1259,6 +1259,18 @@ namespace {
         g_presetMasks[a_actor->GetFormID()] = a_mask;
     }
 
+    // Papyrus native: DYF_Native.GetDefaultOutfit(Actor) - the default outfit
+    // (DOFT) on the actor's base. Vanilla Papyrus can SetOutfit but not read one
+    // back; EnsureManaged needs the original recorded before it bakes the empty
+    // outfit in, so "Release all followers" can restore it.
+    RE::BGSOutfit* GetDefaultOutfitImpl(RE::StaticFunctionTag*, RE::Actor* a_actor) {
+        if (!a_actor) {
+            return nullptr;
+        }
+        auto* npc = a_actor->GetActorBase();
+        return npc ? npc->defaultOutfit : nullptr;
+    }
+
     // Papyrus native: DYF_Native.ClearAllLoadouts() - release everyone.
     void ClearAllLoadoutsImpl(RE::StaticFunctionTag*) {
         std::unique_lock lock(g_loadoutLock);
@@ -1398,6 +1410,7 @@ bool Dresser::RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("SetPresets", "DYF_Native", SetPresetsImpl);
     a_vm->RegisterFunction("SyncWornArmor", "DYF_Native", SyncWornArmorImpl);
     a_vm->RegisterFunction("ClearAllLoadouts", "DYF_Native", ClearAllLoadoutsImpl);
+    a_vm->RegisterFunction("GetDefaultOutfit", "DYF_Native", GetDefaultOutfitImpl);
     logger::info("DYF_Native registered");
     return true;
 }

@@ -38,3 +38,9 @@ Function SetPresets(Actor akActor, int aMask) global native
 ; Release everyone: drops the plugin's whole mirror so those followers go back to
 ; vanilla auto-equip. Used by the MCM's "Release all followers".
 Function ClearAllLoadouts() global native
+
+; The default outfit (DOFT) currently on the actor's base. Read by EnsureManaged
+; BEFORE it bakes the empty outfit in, so "Release all followers" can restore the
+; original - vanilla Papyrus has SetOutfit but no getter. None if the base has no
+; default outfit.
+Outfit Function GetDefaultOutfit(Actor akActor) global native

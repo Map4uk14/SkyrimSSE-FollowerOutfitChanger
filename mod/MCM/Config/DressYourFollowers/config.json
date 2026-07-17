@@ -85,7 +85,7 @@
         {
             "type": "text",
             "text": "Release all followers",
-            "help": "Stop managing every follower. They keep what they are wearing now, but the mod no longer re-asserts it. Use before uninstalling.",
+            "help": "Stop managing every follower. They keep what they are wearing now, but the mod no longer re-asserts it, and their original default outfit is restored behind the scenes. Use before uninstalling.",
             "action": {
                 "type": "CallFunction",
                 "form": "DressYourFollowers.esp|0xD62",
