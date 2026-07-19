@@ -312,6 +312,7 @@ namespace {
     // second pass finds everything already worn and does nothing.
     std::mutex g_pendingLock;
     std::unordered_set<RE::FormID> g_pendingReassert;
+    std::atomic<std::uint32_t> g_refusalCount{0};
 
     void ReassertFromMirror(RE::FormID a_actorId) {
         {
@@ -337,6 +338,7 @@ namespace {
         }
         // One inventory snapshot for the whole pass; there is no per-item count API.
         auto carried = actor->GetInventoryCounts([](RE::TESBoundObject& o) { return o.IsArmor(); });
+        std::uint32_t equipped = 0;
         for (auto id : want) {
             auto* armo = RE::TESForm::LookupByID<RE::TESObjectARMO>(id);
             if (!armo) {
@@ -351,19 +353,26 @@ namespace {
             }
             // force=false to match the toggle's equip: same-slot pieces swap out.
             eqm->EquipObject(actor, armo, nullptr, 1, armo->GetEquipSlot(), false, false, false, true);
+            ++equipped;
+        }
+        if (equipped > 0) {
+            logger::info("Reassert on {:08X}: equipped {} loadout piece(s)", a_actorId, equipped);
         }
     }
 
     // Debounced: a burst of refusals (19 on one load) queues exactly one pass.
-    void ScheduleReassert(RE::FormID a_actorId) {
+    // Returns true when this call queued the pass (= first refusal of a burst),
+    // so the caller can log once per burst instead of once per refusal.
+    bool ScheduleReassert(RE::FormID a_actorId) {
         {
             std::scoped_lock lock(g_pendingLock);
             if (!g_pendingReassert.insert(a_actorId).second) {
-                return;  // already queued
+                return false;  // already queued
             }
         }
         // Next frame, not here: this runs inside the engine's own equip call.
         SKSE::GetTaskInterface()->AddTask([a_actorId]() { ReassertFromMirror(a_actorId); });
+        return true;
     }
 
     // THE anti-auto-equip hook, and the only hook in this plugin.
@@ -399,7 +408,13 @@ namespace {
                 // outfit) and the engine's pick was their only candidate. Put their
                 // real outfit on next frame rather than waiting ~10s for Papyrus.
                 //
-                ScheduleReassert(a_actor->GetFormID());
+                const auto total = ++g_refusalCount;
+                if (ScheduleReassert(a_actor->GetFormID())) {
+                    logger::info("Refused engine equip of '{}' ({:08X}) on {:08X}; "
+                                 "reassert queued (refusals this session: {})",
+                                 a_object->GetName(), a_object->GetFormID(),
+                                 a_actor->GetFormID(), total);
+                }
                 return;  // swallow it: the engine never equips, so nothing flickers
             }
             func(a_manager, a_actor, a_object, a_list);
@@ -884,7 +899,15 @@ namespace {
             // to schedule the handler. With the empty outfit in place the engine no
             // longer auto-reverts, so this sticks.
             auto actor = ResolveTarget();
+            if (!actor) {
+                // A click that resolves no target is invisible to the user - the
+                // panel looks live but nothing happens. Make it loud in the log.
+                logger::warn("Toggle {} '{}' ({:08X}) ignored: no panel target",
+                             equip ? "on" : "off", bound->GetName(), bound->GetFormID());
+            }
             if (actor) {
+                logger::info("Toggle {} '{}' ({:08X}) on {:08X}", equip ? "on" : "off",
+                             bound->GetName(), bound->GetFormID(), actor->GetFormID());
                 if (auto eqm = RE::ActorEquipManager::GetSingleton()) {
                     if (equip) {
                         // Clear the hands before filling them: a weapon the newcomer
@@ -1130,6 +1153,44 @@ namespace {
     void OnJsPresetSave(const char* a_arg) { SendPresetEvent("DYF_PresetSave", a_arg); }
     void OnJsPresetApply(const char* a_arg) { SendPresetEvent("DYF_PresetApply", a_arg); }
 
+    // Context assignment from the overlay ("H|2" = Home -> preset slot 2; slot 0
+    // = unassign; contexts H/T/C). Forwarded as a mod event - Papyrus owns the
+    // assignment storage and the immediate apply (Spec 9).
+    void OnJsCtxAssign(const char* a_arg) {
+        if (!a_arg || (a_arg[0] != 'H' && a_arg[0] != 'T' && a_arg[0] != 'C') ||
+            a_arg[1] != '|' || a_arg[2] < '0' || a_arg[2] > '3' || a_arg[3] != '\0') {
+            return;
+        }
+        std::string ctx(1, a_arg[0]);
+        const float slot = static_cast<float>(a_arg[2] - '0');
+        SKSE::GetTaskInterface()->AddTask([ctx, slot]() {
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_CtxAssign";
+                ev.strArg = ctx.c_str();
+                ev.numArg = slot;
+                ev.sender = nullptr;
+                source->SendEvent(&ev);
+            }
+        });
+    }
+
+    // "Apply" under the situation rows: hand-editing a look pauses the
+    // auto-switching (Papyrus sets a hold); this asks Papyrus to clear it and
+    // re-apply the active situation's outfit. No payload.
+    void OnJsCtxApply(const char*) {
+        SKSE::GetTaskInterface()->AddTask([]() {
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_CtxApply";
+                ev.strArg = "";
+                ev.numArg = 0.0f;
+                ev.sender = nullptr;
+                source->SendEvent(&ev);
+            }
+        });
+    }
+
     // Yours tab activated: (re)send the player's wearable inventory.
     void OnJsPlayerList(const char*) {
         SKSE::GetTaskInterface()->AddTask([]() { PushPlayerList(); });
@@ -1362,6 +1423,47 @@ namespace {
     private:
         RefreshSink() = default;
     };
+
+    // A managed (mirrored) follower entered or left combat: tell Papyrus so the
+    // Combat context outfit (Spec 9) applies the moment aggro starts, not on the
+    // next 3s poll. Unmanaged actors' events are dropped here, so the Papyrus VM
+    // only ever sees the handful that matter.
+    class CombatSink : public RE::BSTEventSink<RE::TESCombatEvent> {
+    public:
+        static CombatSink* GetSingleton() {
+            static CombatSink s;
+            return &s;
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESCombatEvent* a_event,
+                                              RE::BSTEventSource<RE::TESCombatEvent>*) override {
+            if (!a_event || !a_event->actor) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            auto actor = a_event->actor->As<RE::Actor>();
+            if (!actor) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            {
+                std::shared_lock lock(g_loadoutLock);
+                if (!g_loadouts.contains(actor->GetFormID())) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            }
+            if (auto source = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent ev{};
+                ev.eventName = "DYF_CombatChange";
+                ev.strArg = "";
+                ev.numArg = static_cast<float>(a_event->newState.underlying());
+                ev.sender = actor;
+                source->SendEvent(&ev);
+            }
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+    private:
+        CombatSink() = default;
+    };
 }
 
 void Dresser::Init() {
@@ -1383,6 +1485,8 @@ void Dresser::Init() {
     g_prisma->RegisterJSListener(g_view, "dyf_undressall", OnJsUndressAll);
     g_prisma->RegisterJSListener(g_view, "dyf_presetsave", OnJsPresetSave);
     g_prisma->RegisterJSListener(g_view, "dyf_presetapply", OnJsPresetApply);
+    g_prisma->RegisterJSListener(g_view, "dyf_ctxassign", OnJsCtxAssign);
+    g_prisma->RegisterJSListener(g_view, "dyf_ctxapply", OnJsCtxApply);
     g_prisma->RegisterJSListener(g_view, "dyf_playerlist", OnJsPlayerList);
     g_prisma->RegisterJSListener(g_view, "dyf_close", OnJsClose);
     g_prisma->RegisterJSListener(g_view, "dyf_pick", OnJsPick);
@@ -1394,6 +1498,9 @@ void Dresser::Init() {
     }
     if (auto mod = SKSE::GetModCallbackEventSource()) {
         mod->AddEventSink(RefreshSink::GetSingleton());
+    }
+    if (auto events = RE::ScriptEventSourceHolder::GetSingleton()) {
+        events->AddEventSink(CombatSink::GetSingleton());
     }
     logger::info("Dresser initialised (toggle key F4)");
 }

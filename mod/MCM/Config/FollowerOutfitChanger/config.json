@@ -39,6 +39,15 @@
             }
         },
         {
+            "id": "bAutoSwitch:General",
+            "type": "toggle",
+            "text": "Automatic outfit switching",
+            "help": "Switch a follower's outfit by situation - Home (player homes), Travel and Combat. Dress them, then use the overlay's 'Save this outfit as...' buttons; situations without a saved outfit never switch. Changing their look by hand pauses switching for that follower until you press Apply in the overlay.",
+            "valueOptions": {
+                "sourceType": "ModSettingBool"
+            }
+        },
+        {
             "id": "iUiScale:General",
             "type": "slider",
             "text": "Overlay size",

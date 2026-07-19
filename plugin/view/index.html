@@ -135,9 +135,9 @@
   .sbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
   .sbtn.active { color: #6ee7a8; border-color: rgba(110,231,168,0.55); }
 
-  /* Outfit preset slots (Follower tab). Filled slots are solid + accented; empty
+  /* Outfit preset slots (side window). Filled slots are solid + accented; empty
      ones dashed + dim. "Save" arms save mode (amber): the next slot click stores
-     the current outfit there. */
+     the current outfit there. Independent of the situation outfits below. */
   #presetbar { display: flex; gap: 4px; padding: 0 12px 4px; }
   .pbtn {
     flex: 1; text-align: center; padding: 5px 0; font-size: 11px;
@@ -148,6 +148,59 @@
   .pbtn:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
   .pbtn.has { color: #6ee7a8; border-style: solid; border-color: rgba(110,231,168,0.35); }
   .pbtn.arm { color: #ffd27d; border-style: solid; border-color: rgba(255,210,125,0.55); }
+
+  /* Side window (Spec 9): the preset slots and situation-outfit save rows live
+     in their own small box to the RIGHT of the main panel, so the main window
+     stays uncluttered. It shares the panel's zoomed coordinate space (dyfScale
+     zooms both), so left = panel left + width + gap in unzoomed units stays
+     glued beside it at any overlay scale. */
+  #side {
+    position: fixed; top: 5vh; left: 488px; /* 40 + 440 + 8 */
+    width: 200px;
+    display: none; flex-direction: column;
+    background: rgba(20, 22, 28, 0.92);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.55);
+    color: #e8e8ea; overflow: hidden;
+  }
+  .sidehead {
+    padding: 9px 12px 5px; font-size: 11px; font-weight: 600; color: #9aa0aa;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .sidenote { padding: 0 12px 6px; font-size: 10px; color: #5d6470; }
+
+  /* Situation-outfit rows: one per situation. Clicking "Save this outfit as X"
+     snapshots what the follower wears right now as that situation's outfit
+     (dashed = nothing saved, accented = saved; re-saving overwrites). The ✕
+     forgets the saved outfit; it only appears once there is one. */
+  #ctxsave { padding: 2px 8px 10px; }
+  .crow { display: flex; align-items: center; gap: 4px; padding: 2px 4px; }
+  .csave {
+    flex: 1; text-align: center; padding: 6px 2px; font-size: 11px;
+    color: #9aa0aa; border: 1px dashed rgba(255,255,255,0.12); border-radius: 7px;
+    cursor: pointer;
+  }
+  .csave:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
+  .crow.has .csave { color: #6ee7a8; border-style: solid; border-color: rgba(110,231,168,0.35); }
+  .cdel {
+    width: 22px; flex: 0 0 auto; text-align: center; font-size: 13px;
+    color: #6b7280; border-radius: 5px; line-height: 22px; cursor: pointer;
+    visibility: hidden;
+  }
+  .crow.has .cdel { visibility: visible; }
+  .cdel:hover { color: #ff9a9a; background: rgba(255,255,255,0.10); }
+
+  /* "Apply" under the rows. Hand-editing the look pauses auto-switching; the
+     button goes amber while paused, and pressing it re-applies the active
+     situation's outfit and resumes. */
+  #ctxapply {
+    margin: 4px 4px 0; text-align: center; padding: 6px 2px; font-size: 11px;
+    color: #9aa0aa; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
+    cursor: pointer;
+  }
+  #ctxapply:hover { color: #cfd2d8; background: rgba(255,255,255,0.06); }
+  #ctxapply.paused { color: #ffd27d; border-color: rgba(255,210,125,0.55); }
 
   /* Fixed height on purpose: #details is an in-flow flex child, so if it grew on
      hover the list above would reflow and rows would shift out from under the
@@ -218,17 +271,38 @@
     <div class="sbtn" data-sort="type" data-label="Type">Type</div>
     <div class="sbtn" data-sort="slot" data-label="Slot">Slot</div>
   </div>
-  <div id="presetbar" style="display:none">
-    <div class="pbtn" data-slot="1">1</div>
-    <div class="pbtn" data-slot="2">2</div>
-    <div class="pbtn" data-slot="3">3</div>
-    <div class="pbtn" id="presetSave">Save</div>
-  </div>
   <div id="actionbar" style="display:none"><div id="undressAll" class="abtn">Unequip all</div></div>
   <div id="picker"></div>
   <div id="list" style="display:none"></div>
   <div id="plist" style="display:none"></div>
   <div id="details" class="hint" style="display:none">Hover an item for details</div>
+</div>
+
+<div id="side">
+  <div class="sidehead">Saved outfits</div>
+  <div id="presetbar">
+    <div class="pbtn" data-slot="1">1</div>
+    <div class="pbtn" data-slot="2">2</div>
+    <div class="pbtn" data-slot="3">3</div>
+    <div class="pbtn" id="presetSave">Save</div>
+  </div>
+  <div class="sidehead">Auto outfits</div>
+  <div class="sidenote">Dress them up, then save the look they should wear in each situation. It switches by itself.</div>
+  <div id="ctxsave">
+    <div class="crow" data-ctx="H" data-name="Home">
+      <div class="csave"></div>
+      <div class="cdel">&#10005;</div>
+    </div>
+    <div class="crow" data-ctx="T" data-name="Travel">
+      <div class="csave"></div>
+      <div class="cdel">&#10005;</div>
+    </div>
+    <div class="crow" data-ctx="C" data-name="Combat">
+      <div class="csave"></div>
+      <div class="cdel">&#10005;</div>
+    </div>
+    <div id="ctxapply">Apply</div>
+  </div>
 </div>
 
 <script>
@@ -323,6 +397,9 @@
       var z = pct / 100;
       var p = document.getElementById("panel");
       p.style.zoom = z;
+      // The side window shares the zoomed coordinate space; its fixed `left`
+      // is in the same units, so zooming both keeps it glued to the panel.
+      document.getElementById("side").style.zoom = z;
       p.style.maxHeight = "90vh";
       var r = p.getBoundingClientRect();
       if (r.height > 0 && r.bottom > 0.98 * window.innerHeight) {
@@ -362,7 +439,7 @@
     document.querySelector("#tabs").style.display      = "none";
     document.querySelector("#filterbar").style.display = "none";
     document.querySelector("#sortbar").style.display   = "none";
-    document.querySelector("#presetbar").style.display = "none";
+    document.querySelector("#side").style.display      = "none";
     document.querySelector("#actionbar").style.display = "none";
     showPane("#list", false);
     showPane("#plist", false);
@@ -385,11 +462,12 @@
     var f = activeTab === "follower";
     showPane("#list", f);
     showPane("#plist", !f);
-    // "Unequip all", presets and worn-sorting only make sense against the
-    // follower's own gear - Yours-tab rows have no worn state. (The payload's
-    // `worn` for player items is the player's OWN equipped gear - never sort by it.)
+    // "Unequip all", the situation outfits and worn-sorting only make sense
+    // against the follower's own gear - Yours-tab rows have no worn state. (The
+    // payload's `worn` for player items is the player's OWN equipped gear -
+    // never sort by it.)
     document.querySelector("#actionbar").style.display = f ? "" : "none";
-    document.querySelector("#presetbar").style.display = f ? "" : "none";
+    document.querySelector("#side").style.display      = f ? "flex" : "none";
     document.querySelector("#sortWorn").style.display  = f ? "" : "none";
     if (!f && sortMode === "worn") { setSortMode("name"); } // its button just vanished
     if (presetArm) { presetArm = false; updatePresetBar(); } // don't save blind
@@ -460,10 +538,10 @@
 
   // ---- Outfit presets --------------------------------------------------------
   //
-  // Three per-follower outfit slots (Follower tab only). Click a filled slot to
-  // apply it; click Save then a slot to store the current outfit there. The
-  // occupied-slots bitmask (bit 0 = slot 1) rides on every wardrobe push as
-  // data.presets; the contents live in Papyrus (StorageUtil).
+  // Three per-follower outfit slots. Click a filled slot to apply it; click Save
+  // then a slot to store the current outfit there. The occupied-slots bitmask
+  // (bit 0 = slot 1) rides on every wardrobe push as data.presets; the contents
+  // live in Papyrus (StorageUtil).
 
   var presetMask = 0;
   var presetArm = false; // true = next slot click saves instead of applies
@@ -483,6 +561,7 @@
     presetSaveBtn.textContent = presetArm ? "Pick a slot…" : "Save";
     presetSaveBtn.title = presetArm ? "Click again to cancel"
                                     : "Save the current outfit into a slot";
+    updateCtxBar(); // the situation rows read the same mask (bits 4-9)
   }
 
   function presetSlotClick(slot) {
@@ -505,6 +584,67 @@
     presetArm = !presetArm;
     updatePresetBar();
   };
+
+  // ---- Situation outfits (Spec 9) -------------------------------------------
+  //
+  // One row per situation (Home/Travel/Combat) in the side window. "Save this
+  // outfit as X" snapshots what the follower wears RIGHT NOW as that situation's
+  // outfit; the ✕ forgets it. Situation outfits live in their own hidden
+  // Papyrus lists, fully independent of the 1-3 preset slots above, so
+  // overwriting a numbered preset never changes them. Saved state rides bits
+  // 4-9 of data.presets (see Papyrus PushPresets).
+
+  var ctxRows = document.querySelectorAll("#ctxsave .crow");
+
+  function ctxShift(code) { return code === "H" ? 4 : code === "T" ? 6 : 8; }
+  function ctxSaved(code) { return ((presetMask >> ctxShift(code)) & 3) !== 0; }
+
+  function updateCtxBar() {
+    Array.prototype.forEach.call(ctxRows, function (row) {
+      var code = row.getAttribute("data-ctx");
+      var name = row.getAttribute("data-name");
+      var has = ctxSaved(code);
+      row.className = "crow" + (has ? " has" : "");
+      var save = row.querySelector(".csave");
+      save.textContent = has ? ("✓ " + name + " outfit saved")
+                             : ("Save this outfit as " + name);
+      save.title = has ? "Overwrite with what they are wearing now"
+                       : "They will wear what they have on now whenever: " + name;
+      row.querySelector(".cdel").title =
+        "Forget the " + name + " outfit (never auto-switch for it)";
+    });
+    // Bit 10 = the manual-look hold: hand-editing the look pauses the
+    // auto-switching until Apply is pressed. Amber = paused.
+    var apply = document.getElementById("ctxapply");
+    var held = (presetMask & 1024) !== 0;
+    apply.className = held ? "paused" : "";
+    apply.title = held
+      ? "Auto-switching is paused - you changed their look by hand. Press to put the current situation's outfit back on and resume."
+      : "Put the current situation's outfit back on now";
+  }
+
+  Array.prototype.forEach.call(ctxRows, function (row) {
+    var code = row.getAttribute("data-ctx");
+    var shift = ctxShift(code);
+    row.querySelector(".csave").onclick = function () {
+      // Optimistic paint first - the push after Papyrus stores it confirms.
+      presetMask = (presetMask & ~(3 << shift)) | (1 << shift);
+      updateCtxBar();
+      try { window.dyf_ctxassign(code + "|1"); } catch (e) { dlog("ctxassign ERR: " + e); }
+    };
+    row.querySelector(".cdel").onclick = function () {
+      presetMask = presetMask & ~(3 << shift);
+      updateCtxBar();
+      try { window.dyf_ctxassign(code + "|0"); } catch (e) { dlog("ctxassign ERR: " + e); }
+    };
+  });
+
+  document.getElementById("ctxapply").onclick = function () {
+    presetMask = presetMask & ~1024; // optimistic; the push confirms
+    updateCtxBar();
+    try { window.dyf_ctxapply(""); } catch (e) { dlog("ctxapply ERR: " + e); }
+  };
+
   updatePresetBar();
 
   // ---- Keyboard navigation ---------------------------------------------------
@@ -1026,9 +1166,9 @@
       enterWardrobe();
     }
 
-    // Preset slot states ride on every wardrobe push and can change while the
-    // item set stays identical (a save fills a slot), so paint them BEFORE the
-    // same-set early return below.
+    // Preset and situation-outfit states ride on every wardrobe push and can
+    // change while the item set stays identical (a save fills a slot), so paint
+    // them BEFORE the same-set early return below.
     presetMask = data.presets || 0;
     updatePresetBar();
 

@@ -21,6 +21,14 @@ string Property MANAGED_KEY = "DYF_Managed" AutoReadOnly
 string Property LOADOUT_KEY = "DYF_Loadout" AutoReadOnly
 string Property ORIG_OUTFIT_KEY = "DYF_OrigOutfit" AutoReadOnly
 
+; Context outfits (Spec 9). Per-actor ints: which preset slot (1-3) each context
+; auto-applies, 0/unset = unassigned. CTX_CURRENT_KEY stamps the context whose
+; outfit was last applied (1 Home, 2 Travel, 3 Combat) so an unchanged context
+; never re-applies, and a manual edit re-stamps it so the user's choice survives
+; loads and same-context triggers until the context actually changes.
+string Property CTX_CURRENT_KEY = "DYF_CtxCurrent" AutoReadOnly
+string Property CTX_HOLD_KEY = "DYF_CtxHold" AutoReadOnly
+
 ; Re-assert cadence while at least one managed follower is loaded.
 float Property POLL_INTERVAL = 3.0 AutoReadOnly
 
@@ -65,6 +73,30 @@ Function RegisterModEvents()
     RegisterForModEvent("DYF_PresetSave", "OnDYFPresetSave")
     RegisterForModEvent("DYF_PresetApply", "OnDYFPresetApply")
     RegisterForModEvent("DYF_Undo", "OnDYFUndo")
+    RegisterForModEvent("DYF_CtxAssign", "OnDYFCtxAssign")
+    RegisterForModEvent("DYF_CtxApply", "OnDYFCtxApply")
+    RegisterForModEvent("DYF_CombatChange", "OnDYFCombatChange")
+EndFunction
+
+; True for a script instance whose quest form no longer exists: renaming the esp
+; (1.1 "DressYourFollowers" -> 1.2 "FollowerOutfitChanger") deletes the old quest
+; on load, but its script instance lives on inside the save, shows up as
+; "[None].DYF_Main" in the Papyrus log, and still runs - StorageUtil, MCM and
+; DYF_Native calls are all global and work without a bound form. Left alone it
+; races the live quest's instance over the same stored data (stale re-dresses,
+; naked flashes, outfits popping back, late replays of toggle events evicting
+; pieces the user just equipped - all observed in the field). Every externally-
+; woken entry point (OnUpdate + the mod-event handlers) bails out through this
+; check, so the orphan never acts and never re-arms anything.
+;
+; DEAD END - do not "simplify" this back: `(Self as Quest) == none` does NOT
+; detect the orphan. The [None] in its stack traces is the native form failing
+; to resolve; the cast itself is a pure handle operation and still returns
+; non-none for an unbound instance (field-tested 2026-07-18, the orphan walked
+; straight past that check). Identity against the live quest's instance is the
+; reliable test, and calls no native on Self, so the orphan causes no error spam.
+bool Function IsOrphaned()
+    return (Game.GetFormFromFile(0xD62, "FollowerOutfitChanger.esp") as DYF_Main) != Self
 EndFunction
 
 ; Called by DYF_PlayerAlias on load. Re-assert every managed follower's outfit
@@ -80,6 +112,7 @@ Function ResumeManagement()
         ; (saves from before the esp was renamed to FollowerOutfitChanger.esp).
         MigrateBakedOutfits()
         ReassertAllLoaded()
+        ContextCheckAll() ; Spec 9: the save may load into a different context
         RegisterForSingleUpdate(POLL_INTERVAL)
     endif
 EndFunction
@@ -193,6 +226,9 @@ EndFunction
 ; whole toggle is one atomic step - no other toggle or poll tick can interleave
 ; and corrupt the state, and we never read half-applied worn gear.
 Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
     if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
@@ -240,6 +276,7 @@ Event OnDYFToggleItem(string eventName, string strArg, float numArg, Form sender
     ; (loadout + management) here; the 3s poll below re-asserts as the safety net.
     PushLoadout(follower)
     follower.QueueNiNodeUpdate()
+    MarkManualContext(follower)
 
     ; Repaint the overlay from real worn state and keep the poll alive.
     SendPanelRefresh()
@@ -255,6 +292,9 @@ EndEvent
 ; next tick would put the whole outfit straight back on. Their gear stays in their
 ; inventory, so re-dressing them is just ticking the boxes again.
 Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
     if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
@@ -277,6 +317,7 @@ Event OnDYFUndressAll(string eventName, string strArg, float numArg, Form sender
     ; equip on them - that is what keeps them stripped with no flicker.
     PushLoadout(follower)
     follower.QueueNiNodeUpdate()
+    MarkManualContext(follower)
     SendPanelRefresh()
     RegisterForSingleUpdate(POLL_INTERVAL)
 EndEvent
@@ -319,6 +360,22 @@ Function PushPresets(Actor akFollower)
     if StorageUtil.FormListCount(akFollower, PresetKey("Undo")) > 0
         mask += 8 ; bit 3 = the Undo button has a snapshot to restore
     endif
+    ; Situation outfits (Spec 9) ride the same int: bit 4 Home, 6 Travel,
+    ; 8 Combat - set when that situation has a saved outfit. They live in their
+    ; own hidden preset lists ("H"/"T"/"C"), independent of slots 1-3.
+    if StorageUtil.FormListCount(akFollower, PresetKey("H")) > 0
+        mask += 16
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey("T")) > 0
+        mask += 64
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey("C")) > 0
+        mask += 256
+    endif
+    ; Bit 10: the manual-look hold - the overlay draws Apply amber ("paused").
+    if StorageUtil.GetIntValue(akFollower, CTX_HOLD_KEY) != 0
+        mask += 1024
+    endif
     DYF_Native.SetPresets(akFollower, mask)
 EndFunction
 
@@ -327,6 +384,9 @@ EndFunction
 ; EnsureManaged seeds the loadout from what they are wearing right now, so Save
 ; captures their current look even before any toggles.
 Event OnDYFPresetSave(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
     if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
@@ -346,6 +406,9 @@ EndEvent
 ; in their inventory stay in the loadout on purpose: ReassertOutfit skips absent
 ; pieces, and the outfit completes itself if the piece ever comes back.
 Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
     if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
@@ -353,20 +416,27 @@ Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sende
     if !IsValidTarget(follower)
         return
     endif
-    string pkey = PresetKey(strArg)
-    if StorageUtil.FormListCount(follower, pkey) <= 0
+    EnsureManaged(follower)
+    ApplyPresetSlot(follower, strArg)
+    MarkManualContext(follower) ; a hand-picked outfit wins - see MarkManualContext
+EndEvent
+
+; The apply itself, shared between the overlay button (above) and the context
+; auto-switch (Spec 9 - ApplyContextOutfit). The caller ensures management.
+Function ApplyPresetSlot(Actor akFollower, string slot)
+    string pkey = PresetKey(slot)
+    if StorageUtil.FormListCount(akFollower, pkey) <= 0
         return ; empty slot - the overlay greys these out, but never trust the UI
     endif
-    EnsureManaged(follower)
     ; The outgoing outfit becomes the Undo snapshot, then the preset becomes the
     ; loadout. Read the preset into an array before touching anything so the two
     ; copies can't interact.
-    Form[] outfitItems = StorageUtil.FormListToArray(follower, pkey)
-    CopyStoredList(follower, LOADOUT_KEY, PresetKey("Undo"))
-    StorageUtil.FormListClear(follower, LOADOUT_KEY)
+    Form[] outfitItems = StorageUtil.FormListToArray(akFollower, pkey)
+    CopyStoredList(akFollower, LOADOUT_KEY, PresetKey("Undo"))
+    StorageUtil.FormListClear(akFollower, LOADOUT_KEY)
     int i = 0
     while i < outfitItems.Length
-        StorageUtil.FormListAdd(follower, LOADOUT_KEY, outfitItems[i])
+        StorageUtil.FormListAdd(akFollower, LOADOUT_KEY, outfitItems[i])
         i += 1
     endwhile
     ; Arm the mirror BEFORE touching worn state - our own equips run through the
@@ -374,23 +444,26 @@ Event OnDYFPresetApply(string eventName, string strArg, float numArg, Form sende
     ; armor instantly on the game thread (SyncWornArmor) so the repaint below reads
     ; the finished outfit - ReassertOutfit alone lands too late and the panel
     ; showed a half-applied state. ReassertOutfit still runs for the weapons.
-    PushLoadout(follower)
-    DYF_Native.SyncWornArmor(follower)
-    ReassertOutfit(follower)
-    follower.QueueNiNodeUpdate()
-    PushPresets(follower) ; the Undo slot just filled (or changed)
+    PushLoadout(akFollower)
+    DYF_Native.SyncWornArmor(akFollower)
+    ReassertOutfit(akFollower)
+    akFollower.QueueNiNodeUpdate()
+    PushPresets(akFollower) ; the Undo slot just filled (or changed)
     SendPanelRefresh()
     ; Weapon equips settle a beat later than the armor sync - run a short fast
     ; burst so the checkboxes self-correct within half a second, not 3s.
     fastTicksRemaining = 2
     RegisterForSingleUpdate(FAST_INTERVAL)
-EndEvent
+EndFunction
 
 ; Overlay "Undo": restore the outfit snapshotted before the last destructive
 ; action ("Unequip all" or a preset apply). Implemented as an apply of the hidden
 ; "Undo" pseudo-slot, which swaps snapshot and current outfit - so Undo twice
 ; toggles between the two.
 Event OnDYFUndo(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
     if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         return
     endif
@@ -415,9 +488,176 @@ Event OnDYFUndo(string eventName, string strArg, float numArg, Form sender)
     ReassertOutfit(follower)
     follower.QueueNiNodeUpdate()
     PushPresets(follower)
+    MarkManualContext(follower)
     SendPanelRefresh()
     fastTicksRemaining = 2
     RegisterForSingleUpdate(FAST_INTERVAL)
+EndEvent
+
+; -------------------------------------------------------------------
+; Context outfits - Home / Travel / Combat (Spec 9)
+; -------------------------------------------------------------------
+
+; The vanilla "this location is a player home" keyword, fetched by editor ID
+; (SKSE) so no esp property or CK edit is needed. Cached after the first hit.
+Keyword kHomeKeyword = none
+Keyword Function HomeKeyword()
+    if kHomeKeyword == none
+        kHomeKeyword = Keyword.GetKeyword("LocTypePlayerHouse")
+    endif
+    return kHomeKeyword
+EndFunction
+
+; Which context applies to this follower right now: Combat while they fight,
+; else Home while the player stands in a player home, else Travel.
+; 1 = Home, 2 = Travel, 3 = Combat - the codes stamped into CTX_CURRENT_KEY.
+int Function ActiveContext(Actor akFollower)
+    if akFollower.IsInCombat()
+        return 3
+    endif
+    Location loc = Game.GetPlayer().GetCurrentLocation()
+    if loc && HomeKeyword() && loc.HasKeyword(HomeKeyword())
+        return 1
+    endif
+    return 2
+EndFunction
+
+; Storage key of one context's assignment; c is the overlay's context code.
+; The user just chose a look by hand (toggle, preset apply, undo, unequip all).
+; Stamp the ACTIVE context as already handled AND pin the look: auto-switching
+; pauses for this follower until the overlay's Apply button clears the hold. A
+; hand-picked outfit must survive context CHANGES too, not just same-context
+; ticks - "custom stays until I press Apply" (user request 2026-07-19).
+Function MarkManualContext(Actor akFollower)
+    StorageUtil.SetIntValue(akFollower, CTX_CURRENT_KEY, ActiveContext(akFollower))
+    StorageUtil.SetIntValue(akFollower, CTX_HOLD_KEY, 1)
+EndFunction
+
+; Auto-apply the active situation's saved outfit, only when the context CHANGED
+; since the last apply/manual stamp - repeated cell loads inside one context must
+; never churn re-applies. A situation with no saved outfit keeps the current
+; look AND leaves the stamp alone, so saving one later applies on the next
+; trigger instead of being swallowed.
+Function ApplyContextOutfit(Actor akFollower)
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bAutoSwitch:General")
+        return
+    endif
+    if StorageUtil.GetIntValue(akFollower, CTX_HOLD_KEY) != 0
+        return ; hand-made look pinned - only the overlay's Apply resumes
+    endif
+    int ctx = ActiveContext(akFollower)
+    if StorageUtil.GetIntValue(akFollower, CTX_CURRENT_KEY) == ctx
+        return
+    endif
+    string slot
+    if ctx == 1
+        slot = "H"
+    elseif ctx == 2
+        slot = "T"
+    else
+        slot = "C"
+    endif
+    if StorageUtil.FormListCount(akFollower, PresetKey(slot)) <= 0
+        return
+    endif
+    StorageUtil.SetIntValue(akFollower, CTX_CURRENT_KEY, ctx)
+    ApplyPresetSlot(akFollower, slot)
+EndFunction
+
+; Recompute every loaded managed follower - the player alias calls this on
+; location changes, ResumeManagement on load.
+Function ContextCheckAll()
+    if IsOrphaned()
+        return
+    endif
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
+        return
+    endif
+    int i = StorageUtil.FormListCount(none, MANAGED_KEY)
+    while i > 0
+        i -= 1
+        Actor a = StorageUtil.FormListGet(none, MANAGED_KEY, i) as Actor
+        if a && !a.IsDead() && a.Is3DLoaded()
+            ApplyContextOutfit(a)
+        endif
+    endwhile
+EndFunction
+
+; Overlay "Save this outfit as X" / its ✕ (strArg = "H"/"T"/"C"; numArg 0 =
+; forget the saved outfit, anything else = save). Situation outfits are their
+; own hidden preset lists (PresetKey("H"/"T"/"C")), fully independent of the
+; generic 1-3 slots, so overwriting a numbered preset can never change one.
+Event OnDYFCtxAssign(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    if strArg != "H" && strArg != "T" && strArg != "C"
+        return
+    endif
+    EnsureManaged(follower)
+    if (numArg as int) == 0
+        StorageUtil.FormListClear(follower, PresetKey(strArg))
+    else
+        CopyStoredList(follower, LOADOUT_KEY, PresetKey(strArg))
+    endif
+    ; Do NOT apply here. The outfit just saved IS what they are wearing, so
+    ; applying is at best churn - and when the saved situation is not the active
+    ; one, ApplyContextOutfit would re-dress them in the ACTIVE situation's
+    ; outfit, yanking off the look the user just built. Stamp the active context
+    ; as handled instead; the next real context change still switches.
+    ; NOT MarkManualContext: building the look set the hold (every toggle does),
+    ; but saving it INTO the auto system means the user wants switching live -
+    ; clearing the hold here is what makes "dress, save, done" work.
+    StorageUtil.SetIntValue(follower, CTX_CURRENT_KEY, ActiveContext(follower))
+    StorageUtil.UnsetIntValue(follower, CTX_HOLD_KEY)
+    PushPresets(follower)
+    SendPanelRefresh()
+EndEvent
+
+; Overlay "Apply" under the situation rows: hand-editing the look pauses
+; auto-switching (MarkManualContext sets the hold); this clears it, forgets the
+; context stamp and re-applies the active situation's outfit right away.
+Event OnDYFCtxApply(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
+        return
+    endif
+    Actor follower = DYF_Native.GetPanelTarget()
+    if !IsValidTarget(follower)
+        return
+    endif
+    EnsureManaged(follower)
+    StorageUtil.UnsetIntValue(follower, CTX_HOLD_KEY)
+    StorageUtil.UnsetIntValue(follower, CTX_CURRENT_KEY)
+    ApplyContextOutfit(follower)
+    ; ApplyContextOutfit pushes when it applies; push again for the no-apply
+    ; case (nothing saved for this situation) so the amber Apply still clears.
+    PushPresets(follower)
+    SendPanelRefresh()
+EndEvent
+
+; From the C++ combat sink: a mirrored follower entered or left combat (sender =
+; the actor). Recompute just them - instant armor-up on aggro.
+Event OnDYFCombatChange(string eventName, string strArg, float numArg, Form sender)
+    if IsOrphaned()
+        return
+    endif
+    if !MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
+        return
+    endif
+    Actor a = sender as Actor
+    if a && !a.IsDead() && StorageUtil.FormListHas(none, MANAGED_KEY, a)
+        ApplyContextOutfit(a)
+    endif
 EndEvent
 
 ; Does this weapon claim both hands? Weapon types are the engine's own enum, the
@@ -723,6 +963,9 @@ string[] Function GetManagedNames()
 EndFunction
 
 Event OnUpdate()
+    if IsOrphaned()
+        return
+    endif
     if MCM.GetModSettingBool("FollowerOutfitChanger", "bModEnabled:General")
         ReassertAllLoaded()
     endif
@@ -762,6 +1005,11 @@ Function ClearAllManaged()
             StorageUtil.FormListClear(a, PresetKey("2"))
             StorageUtil.FormListClear(a, PresetKey("3"))
             StorageUtil.FormListClear(a, PresetKey("Undo"))
+            StorageUtil.FormListClear(a, PresetKey("H"))
+            StorageUtil.FormListClear(a, PresetKey("T"))
+            StorageUtil.FormListClear(a, PresetKey("C"))
+            StorageUtil.UnsetIntValue(a, CTX_CURRENT_KEY)
+            StorageUtil.UnsetIntValue(a, CTX_HOLD_KEY)
         endif
         i += 1
     endwhile

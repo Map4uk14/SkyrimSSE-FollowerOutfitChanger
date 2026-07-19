@@ -23,6 +23,9 @@ Event OnLocationChange(Location akOldLoc, Location akNewLoc)
     DYF_Main main = GetOwningQuest() as DYF_Main
     if main
         main.ReassertSoon()
+        ; Spec 9: stepping into/out of a player home may change the Home/Travel
+        ; context - swap assigned context outfits for every loaded follower.
+        main.ContextCheckAll()
     endif
 EndEvent
 
